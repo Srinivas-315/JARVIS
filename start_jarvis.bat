@@ -1,0 +1,17 @@
+@echo off
+title JARVIS AI Assistant
+echo.
+echo  ██╗ █████╗ ██████╗ ██╗   ██╗██╗███████╗
+echo  ██║██╔══██╗██╔══██╗██║   ██║██║██╔════╝
+echo  ██║███████║██████╔╝██║   ██║██║███████╗
+echo  ██║██╔══██║██╔══██╗╚██╗ ██╔╝██║╚════██║
+echo  █████╔══██║██║  ██║ ╚████╔╝ ██║███████║
+echo  ╚════╝  ╚═╝╚═╝  ╚═╝  ╚═══╝  ╚═╝╚══════╝
+echo.
+echo  Starting JARVIS AI Assistant...
+echo.
+
+cd /d "%~dp0"
+python main.py --gui
+
+pause

@@ -1,0 +1,26 @@
+# ============================================================
+#  JARVIS — .gitignore (protect your secrets!)
+# ============================================================
+.env
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.db
+*.log
+*.mp3
+*.wav
+.whisper/
+models/
+venv/
+.venv/
+*.db-shm
+*.db-wal
+*.pkl
+*.gguf
+*.onnx
+*.bin
+nul
+scratch/
+.zed/
+__pycache__/

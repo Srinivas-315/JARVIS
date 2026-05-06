@@ -1,0 +1,30 @@
+
+============================================================
+CRASH at 2026-04-28 20:32:49.692930
+Command: 'Unmute audio'
+Traceback (most recent call last):
+  File "C:\Users\srini\OneDrive\Attachments\Desktop\PROJECTS\JARVIS\main.py", line 572, in process_command
+    raw_response = self._process_command_inner(text)
+  File "C:\Users\srini\OneDrive\Attachments\Desktop\PROJECTS\JARVIS\main.py", line 1365, in _process_command_inner
+    _mute_match = _re_dnd.search(
+UnboundLocalError: local variable '_re_dnd' referenced before assignment
+
+============================================================
+CRASH at 2026-04-28 20:32:59.863543
+Command: 'Unmute audio'
+Traceback (most recent call last):
+  File "C:\Users\srini\OneDrive\Attachments\Desktop\PROJECTS\JARVIS\main.py", line 572, in process_command
+    raw_response = self._process_command_inner(text)
+  File "C:\Users\srini\OneDrive\Attachments\Desktop\PROJECTS\JARVIS\main.py", line 1365, in _process_command_inner
+    _mute_match = _re_dnd.search(
+UnboundLocalError: local variable '_re_dnd' referenced before assignment
+
+============================================================
+CRASH at 2026-04-28 20:36:46.854815
+Command: 'Unmute audio'
+Traceback (most recent call last):
+  File "C:\Users\srini\OneDrive\Attachments\Desktop\PROJECTS\JARVIS\main.py", line 572, in process_command
+    raw_response = self._process_command_inner(text)
+  File "C:\Users\srini\OneDrive\Attachments\Desktop\PROJECTS\JARVIS\main.py", line 1365, in _process_command_inner
+    if "notification" in text_lower and any(
+UnboundLocalError: local variable '_re_dnd' referenced before assignment

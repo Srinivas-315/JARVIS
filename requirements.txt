@@ -1,0 +1,65 @@
+# ============================================================
+#  JARVIS — Requirements (Phase 1 to 10)
+# ============================================================
+
+# AI Brain (new package - replaces deprecated google-generativeai)
+google-genai
+
+# Free AI API Clients (unlimited, no quota)
+groq
+huggingface_hub
+openai  # Used by OpenRouter (OpenAI-compatible API)
+
+# Voice Input
+openai-whisper
+sounddevice
+numpy
+
+# Voice Output
+pyttsx3
+
+# Wake Word (free, no signup needed)
+openwakeword
+
+# System Control
+pyautogui
+psutil
+pygetwindow
+pyperclip
+screen-brightness-control
+pycaw
+comtypes
+
+# Browser Automation
+playwright
+
+# Internet & Info
+requests
+beautifulsoup4
+wikipedia
+pywhatkit
+
+# Weather & News (use APIs)
+# (handled by requests library)
+
+# Notifications & Scheduler
+plyer
+schedule
+winsdk  # Windows notification listener (event-driven fallback)
+
+# Memory
+# sqlite3 is built-in to Python
+
+# Image & Vision
+Pillow
+pytesseract
+pdfplumber
+
+# GUI
+PyQt5
+
+# Utils
+python-dotenv
+colorama
+sqlalchemy  # For advanced conversation storage
+aiohttp  # Async HTTP for multiple API calls
