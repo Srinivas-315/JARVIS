@@ -1,26 +1,64 @@
 # ============================================================
 #  JARVIS — .gitignore (protect your secrets!)
 # ============================================================
+
+# Secrets & env
 .env
+
+# Python cache
 __pycache__/
 *.pyc
 *.pyo
 *.pyd
+
+# Databases
 *.db
-*.log
-*.mp3
-*.wav
-.whisper/
-models/
-venv/
-.venv/
 *.db-shm
 *.db-wal
+
+# Audio files (generated at runtime)
+*.mp3
+*.wav
+*.log
+
+# ML model weights (too large for git, retrain locally)
 *.pkl
 *.gguf
 *.onnx
 *.bin
-nul
-scratch/
+*.pt
+*.pth
+*.safetensors
+ml/jarvis_intent_model/
+ml/training_output/
+ml/wake_word_model/
+ml/speaker_data/
+ml/wake_data/
+ml/training_data.json
+
+# Large model files
+yolov8n.pt
+intent_classifier.pkl
+
+# Whisper & models
+.whisper/
+models/
+
+# Virtual environments
+venv/
+.venv/
+
+# IDE & temp
 .zed/
-__pycache__/
+nul
+_ul
+scratch/
+
+# Data files (generated at runtime)
+data/crash_log.txt
+data/training_conversations.jsonl
+data/huggingface_finetune.jsonl
+data/scene_capture.jpg
+data/Modelfile.jarvis
+data/api_usage.json
+data/vector_memory.db

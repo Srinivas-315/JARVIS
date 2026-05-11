@@ -41,6 +41,23 @@ from brain.intent_parser import (
     parse_intent,
 )
 
+# ─── Smart Router (AI-powered intent classification) ─────────
+from brain.context_manager import ConversationContext
+from brain.smart_router import SmartRouter
+from brain.skill_executor import SkillExecutor
+from brain.clarifier import Clarifier
+
+# ─── ML Intelligence Modules ────────────────────────────────
+try:
+    from ml.voice_emotion import VoiceEmotionDetector
+    from ml.face_emotion import FaceEmotionDetector
+    from ml.gesture_recognition import GestureRecognizer
+    from ml.speaker_id import SpeakerVerifier
+    _ML_LOADED = True
+except ImportError as _ml_err:
+    log.info(f"ML modules not fully loaded: {_ml_err}")
+    _ML_LOADED = False
+
 # ─── Language ────────────────────────────────────────────────
 from brain.language_handler import LanguageHandler
 from brain.vision_handler import VisionHandler
@@ -250,8 +267,70 @@ class JARVIS:
         except Exception:
             self.face_login = None
 
+        # ── Smart Router (AI-powered intent classification) ──
+        self.context = ConversationContext(max_history=8)
+        self.smart_router = SmartRouter(self.gemini)
+        self.skill_executor = SkillExecutor(self)
+        self.clarifier = Clarifier()
+        log.info("  SmartRouter + ContextManager + SkillExecutor initialized")
+
+        # ── ML Intelligence Modules ─────────────────────────────
+        self.voice_emotion = None
+        self.face_emotion = None
+        self.gesture_recognizer = None
+        self.speaker_verifier = None
+        self.predictor = None
+        self.scene_ai = None
+        self.anomaly_detector = None
+
+        if _ML_LOADED:
+            try:
+                self.voice_emotion = VoiceEmotionDetector()
+                log.info("  Voice emotion detector ready")
+            except Exception as e:
+                log.debug(f"Voice emotion init error: {e}")
+
+            try:
+                self.face_emotion = FaceEmotionDetector()
+                log.info("  Face emotion detector ready")
+            except Exception as e:
+                log.debug(f"Face emotion init error: {e}")
+
+            try:
+                self.gesture_recognizer = GestureRecognizer()
+                log.info("  Gesture recognition ready")
+            except Exception as e:
+                log.debug(f"Gesture init error: {e}")
+
+            try:
+                self.speaker_verifier = SpeakerVerifier()
+                log.info("  Speaker verification ready")
+            except Exception as e:
+                log.debug(f"Speaker ID init error: {e}")
+
+            try:
+                from ml.predictive_actions import PredictiveActions
+                self.predictor = PredictiveActions()
+                log.info(f"  Predictive actions ready ({self.predictor.get_stats()['commands_logged']} commands logged)")
+            except Exception as e:
+                log.debug(f"Predictive actions init error: {e}")
+
+            try:
+                from ml.scene_understanding import SceneUnderstanding
+                self.scene_ai = SceneUnderstanding()
+                log.info(f"  Scene understanding ready (YOLO={self.scene_ai._yolo.is_ready}, CLIP={self.scene_ai._scene.is_ready})")
+            except Exception as e:
+                log.debug(f"Scene understanding init error: {e}")
+
+            try:
+                from ml.anomaly_detector import AnomalyDetector
+                self.anomaly_detector = AnomalyDetector()
+                log.info(f"  Anomaly detector ready ({self.anomaly_detector.get_stats()['metrics_logged']} metrics, model={'trained' if self.anomaly_detector.is_ready else 'needs data'})")
+            except Exception as e:
+                log.debug(f"Anomaly detector init error: {e}")
+
         log.info("=" * 50)
-        log.info("  🤖 JARVIS is ONLINE and ready!")
+        log.info("  JARVIS is ONLINE and ready!")
         log.info("=" * 50)
 
         # ── Emotion / Personality / Memory ────────────────────
@@ -286,6 +365,19 @@ class JARVIS:
             log.info("  🔗 Memory fully wired — context injected in every AI call")
         except Exception as _wire_err:
             log.warning(f"Memory wiring error: {_wire_err}")
+
+        # ── Telegram Bridge (optional — needs TELEGRAM_BOT_TOKEN) ──
+        self._telegram = None
+        try:
+            from skills.telegram_bridge import TelegramBridge
+            self._telegram = TelegramBridge()
+            if self._telegram.is_available:
+                self._telegram.start(jarvis_instance=self)
+                log.info("  📱 Telegram bridge online — control JARVIS from phone!")
+            else:
+                log.info("  📱 Telegram bridge: no token configured (optional)")
+        except Exception as _tg_err:
+            log.debug(f"Telegram bridge init: {_tg_err}")
 
         # ── Register graceful shutdown ────────────────────────
         import atexit
@@ -547,6 +639,39 @@ class JARVIS:
                 self._cancel_all_tasks()
                 return ""
 
+            # ── 0b. SPEAKER VERIFICATION — Is this the owner? ────────
+            # If enrolled, only respond to Srini's voice
+            if self.speaker_verifier and self.speaker_verifier.is_ready:
+                try:
+                    audio_np = getattr(self.listener, '_last_audio_np', None)
+                    if audio_np is not None and len(audio_np) > 0:
+                        sv_result = self.speaker_verifier.verify(audio_np)
+                        if not sv_result.get("is_owner", True):
+                            sim = sv_result.get("similarity", 0)
+                            log.warning(f"Speaker rejected: similarity={sim:.2f}")
+                            self._speak("I'm sorry, I only respond to my owner's voice.")
+                            return ""
+                        else:
+                            log.debug(f"Speaker verified: similarity={sv_result.get('similarity', 0):.2f}")
+                except Exception as e:
+                    log.debug(f"Speaker verification error (allowing): {e}")
+
+            # ── 0c. VOICE EMOTION — Detect mood from voice tone ──────
+            # Analyzes pitch/energy/speed to detect happy/sad/angry/stressed
+            if self.voice_emotion:
+                try:
+                    audio_np = getattr(self.listener, '_last_audio_np', None)
+                    if audio_np is not None and len(audio_np) > 0:
+                        ve_result = self.voice_emotion.detect(audio_np)
+                        voice_mood = ve_result.get("emotion", "neutral")
+                        voice_conf = ve_result.get("confidence", 0)
+                        if voice_conf > 0.3 and voice_mood != "neutral":
+                            log.info(f"Voice emotion: {voice_mood} ({voice_conf:.0%})")
+                            # Feed to EmotionEngine for mood-adaptive responses
+                            self.emotion.update_mood(voice_mood)
+                except Exception as e:
+                    log.debug(f"Voice emotion error: {e}")
+
             # ── 1. Update emotion from user input ────────────────────
             emotion = self.emotion.detect_and_update(text)
 
@@ -621,6 +746,16 @@ class JARVIS:
                 self.memory.add_exchange(text, styled, session_id=self._session)
                 # Update emotion from the response content
                 self.emotion.update_from_response(styled)
+
+                # ── 5b. LOG TO PREDICTIVE ACTIONS — learns usage patterns ──
+                if self.predictor:
+                    try:
+                        # Determine intent for logging (from SmartRouter or keyword match)
+                        _log_intent = getattr(self, '_last_routed_intent', 'chat')
+                        self.predictor.log_command(_log_intent, text)
+                    except Exception:
+                        pass
+
                 return styled
 
             return raw_response
@@ -653,9 +788,83 @@ class JARVIS:
         """
         Takes user voice input, routes to correct skill,
         speaks immediately, executes, then returns response.
+
+        UPGRADE: SmartRouter (AI) tries first. If it handles the command,
+        we return immediately. Otherwise, fall through to the old keyword chain.
         """
         if not text or not text.strip():
             return ""
+
+        # ══════════════════════════════════════════════════════════
+        # 🧠 SMART ROUTER — AI-powered intent classification
+        # Tries Gemini first. Falls back to keyword chain below.
+        # ══════════════════════════════════════════════════════════
+        try:
+            # 1. Update conversation context
+            self.context.add_user_input(text)
+
+            # 2. AI classifies the intent
+            intent_result = self.smart_router.route(text, self.context)
+            source = intent_result.get("source", "")
+            action = intent_result.get("action", "unknown")
+            confidence = intent_result.get("confidence", 0)
+
+            log.info(
+                f"SmartRouter result: action={action}, "
+                f"confidence={confidence:.0%}, source={source}"
+            )
+
+            # Track the last intent for predictive actions logging
+            self._last_routed_intent = action
+
+            # 3. Check if entities are missing (triggers clarification)
+            if action not in ("unknown", "chat", "stop", "send_typed", "_clarify"):
+                clarify = self.clarifier.check_and_clarify(intent_result, self.context)
+                if clarify:
+                    prompt = clarify["entities"].get("prompt", "Could you clarify?")
+                    self._speak(prompt)
+                    return ""
+
+            # 4. Execute via SkillExecutor if AI is confident
+            if source in ("ai", "instant", "local_ml", "clarification_complete") and confidence >= 0.6:
+                # Handle special signals
+                if action == "stop":
+                    self.speaker.speak("Stopping everything, sir.")
+                    self._cancel_all_tasks()
+                    return ""
+
+                if action == "_clarify":
+                    prompt = intent_result["entities"].get("prompt", "Could you clarify?")
+                    self._speak(prompt)
+                    return ""
+
+                if action == "chat":
+                    pass  # Fall through to Gemini chat below
+                else:
+                    response = self.skill_executor.execute(intent_result)
+                    if response:
+                        # Update context with result
+                        self.context.add_result(intent_result, response)
+
+                        # Special signals
+                        if response == "__STOP__":
+                            self._cancel_all_tasks()
+                            return ""
+                        if response == "__SEND__":
+                            import pyautogui
+                            pyautogui.press('enter')
+                            return "Sent!"
+
+                        self._speak(response)
+                        return ""
+
+        except Exception as e:
+            log.warning(f"SmartRouter error (falling back to keywords): {e}")
+
+        # ══════════════════════════════════════════════════════════
+        # 📋 KEYWORD FALLBACK — Original if/elif chain
+        # Reached when: AI unavailable, low confidence, chat, or unhandled
+        # ══════════════════════════════════════════════════════════
 
         # ── Auto-correct misheard words ───────────────────────
         text = autocorrect(text)
@@ -768,12 +977,105 @@ class JARVIS:
                 self._speak("Looking through the camera now...")
                 _vis_resp = self.vision.identify_objects()
             if _vis_resp:
+                # ── ENHANCE with Scene Understanding if available ──
+                if self.scene_ai and self.scene_ai.is_ready:
+                    try:
+                        import os
+                        _scene_img = os.path.join("data", "vision_capture.jpg")
+                        if os.path.exists(_scene_img):
+                            _scene_result = self.scene_ai.analyze(_scene_img)
+                            if _scene_result.get("description"):
+                                _vis_resp += " " + _scene_result["description"]
+                    except Exception as e:
+                        log.debug(f"Scene enhancement error: {e}")
                 self._speak(_vis_resp)
             else:
                 self._speak(
                     "Camera isn't responding, sir. "
                     "Check it's connected and not in use by another app like Teams or Zoom."
                 )
+            return ""
+
+        # ── Face Emotion Detection — "check my mood" / "how do I look" ──
+        _face_emo_triggers = [
+            "check my mood", "how do i look", "what's my expression",
+            "read my face", "face emotion", "my mood", "my expression",
+            "am i happy", "am i sad", "am i angry",
+        ]
+        if any(t in text_lower for t in _face_emo_triggers):
+            if self.face_emotion and self.face_emotion.is_ready:
+                self._speak("Let me look at your face, sir.")
+                try:
+                    fe_result = self.face_emotion.detect_from_camera()
+                    if fe_result.get("face_detected"):
+                        emo = fe_result["emotion"]
+                        conf = fe_result["confidence"]
+                        self._speak(f"You look {emo}, sir. I'm about {conf:.0%} confident.")
+                        # Feed to emotion engine
+                        self.emotion.update_mood(emo)
+                    else:
+                        self._speak("I couldn't detect your face clearly. Try facing the camera, sir.")
+                except Exception as e:
+                    log.debug(f"Face emotion error: {e}")
+                    self._speak("Face detection encountered an error, sir.")
+            else:
+                self._speak("Face emotion detection isn't available right now, sir.")
+            return ""
+
+        # ── Gesture Control — "gesture mode" / "hand control" ──
+        _gesture_triggers = [
+            "gesture mode", "hand control", "gesture control",
+            "start gesture", "use gestures", "hand gestures",
+        ]
+        if any(t in text_lower for t in _gesture_triggers):
+            if self.gesture_recognizer and self.gesture_recognizer.is_ready:
+                self._speak("Starting gesture control mode. Show me a hand gesture, sir.")
+                try:
+                    result = self.gesture_recognizer.detect_from_camera()
+                    gesture = result.get("gesture", "none")
+                    action = result.get("action")
+                    if gesture != "none" and action:
+                        self._speak(f"I see a {gesture.replace('_', ' ')} gesture. That means {action}.")
+                        # Execute the gesture action
+                        if action == "confirm":
+                            self._speak("Confirmed, sir!")
+                        elif action == "stop":
+                            self._cancel_all_tasks()
+                            self._speak("Stopping everything.")
+                        elif action == "screenshot":
+                            self.process_command("take a screenshot")
+                        elif action == "volume_up":
+                            self.process_command("volume up")
+                        elif action == "volume_down":
+                            self.process_command("volume down")
+                        elif action == "mute":
+                            self.process_command("mute")
+                    else:
+                        self._speak("I didn't detect a clear gesture. Try thumbs up, peace sign, or open palm.")
+                except Exception as e:
+                    log.debug(f"Gesture error: {e}")
+                    self._speak("Gesture detection had an error, sir.")
+            else:
+                self._speak("Gesture recognition isn't available right now, sir.")
+            return ""
+
+        # ── Scene Understanding — "scan the scene" / "describe the room" ──
+        _scene_triggers = [
+            "scan the scene", "describe the room", "what's around me",
+            "scene analysis", "analyze the scene", "describe my surroundings",
+            "what do you see around", "scan my room",
+        ]
+        if any(t in text_lower for t in _scene_triggers):
+            if self.scene_ai and self.scene_ai.is_ready:
+                self._speak("Analyzing the scene now, sir.")
+                try:
+                    description = self.scene_ai.describe_camera()
+                    self._speak(description)
+                except Exception as e:
+                    log.debug(f"Scene analysis error: {e}")
+                    self._speak("Scene analysis encountered an error, sir.")
+            else:
+                self._speak("Scene understanding isn't available. Install ultralytics or open-clip-torch, sir.")
             return ""
 
         stdlib_re = re  # Alias to avoid Python scoping issue with local imports
@@ -5577,15 +5879,35 @@ class JARVIS:
                     else:
                         # Wolfram couldn't answer — fall through to Gemini/LLM
                         mem_ctx = self.memory.get_context_for_llm()
-                        enriched = (
-                            f"{mem_ctx}\n\nSrini says: {text}" if mem_ctx else text
+                        # Inject RAG — relevant past conversations
+                        try:
+                            from brain.memory import ConversationMemory as _CM
+                            _rag_ctx = _CM().get_relevant_history(text, top_k=3)
+                        except Exception:
+                            _rag_ctx = ""
+                        enriched = text
+                        if mem_ctx or _rag_ctx:
+                            enriched = f"{mem_ctx}\n{_rag_ctx}\n\nSrini says: {text}".strip()
+                        response = self.gemini.ask_streaming(
+                            enriched,
+                            on_sentence=self._speak,
                         )
-                        response = self.gemini.ask(enriched)
                 else:
                     # 2. Conversational / task question → Gemini with memory context
                     mem_ctx = self.memory.get_context_for_llm()
-                    enriched = f"{mem_ctx}\n\nSrini says: {text}" if mem_ctx else text
-                    response = self.gemini.ask(enriched)
+                    # Inject RAG — relevant past conversations
+                    try:
+                        from brain.memory import ConversationMemory as _CM2
+                        _rag_ctx2 = _CM2().get_relevant_history(text, top_k=3)
+                    except Exception:
+                        _rag_ctx2 = ""
+                    enriched = text
+                    if mem_ctx or _rag_ctx2:
+                        enriched = f"{mem_ctx}\n{_rag_ctx2}\n\nSrini says: {text}".strip()
+                    response = self.gemini.ask_streaming(
+                        enriched,
+                        on_sentence=self._speak,
+                    )
 
         # ── Save to memory (works even without AI!) ───────────
         save_response = response if response else "(no AI response — offline)"
@@ -5624,6 +5946,44 @@ class JARVIS:
                 self._speak("No pending notifications, sir. All clear!")
         except Exception as e:
             log.debug(f"Startup notification check failed: {e}")
+
+        # ── Start anomaly detector background thread ───────────
+        # Monitors system health every 60s, alerts on CPU/RAM anomalies
+        if self.anomaly_detector:
+            try:
+                import threading
+                def _anomaly_monitor():
+                    import time as _t2
+                    while self._running:
+                        try:
+                            alert = self.anomaly_detector.get_alert()
+                            if alert:
+                                log.warning(f"Anomaly alert: {alert}")
+                                self._speak(alert)
+                        except Exception as e:
+                            log.debug(f"Anomaly check error: {e}")
+                        _t2.sleep(60)  # Check every 60 seconds
+
+                _anomaly_thread = threading.Thread(
+                    target=_anomaly_monitor, daemon=True, name="anomaly-monitor"
+                )
+                _anomaly_thread.start()
+                log.info("  Anomaly monitor started (checking every 60s)")
+            except Exception as e:
+                log.debug(f"Anomaly thread start error: {e}")
+
+        # ── Predictive actions — suggest what you usually do now ──
+        if self.predictor and self.predictor.is_ready:
+            try:
+                predictions = self.predictor.predict_next(top_k=1)
+                if predictions:
+                    p = predictions[0]
+                    if p["confidence"] >= 0.4:
+                        action_name = p["action"].replace("_", " ")
+                        reason = p.get("reason", "")
+                        self._speak(f"By the way sir, you usually {action_name} around this time. {reason}")
+            except Exception as e:
+                log.debug(f"Prediction error: {e}")
 
         print("\n" + "=" * 55)
         print("  Say something (or type 'quit' to exit)")

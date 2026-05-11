@@ -109,6 +109,25 @@ class EmotionEngine:
         elif len(response_text) < 60 and self._state == "thoughtful":
             self._shift("focused")
 
+    def update_mood(self, voice_mood: str):
+        """
+        Update JARVIS emotion from ML voice emotion detection.
+        Maps voice moods (happy/sad/angry/stressed/neutral) → JARVIS emotions.
+        Called by process_command() after voice_emotion.detect().
+        """
+        _mood_map = {
+            "happy": "happy",
+            "excited": "excited",
+            "sad": "concerned",
+            "angry": "concerned",
+            "stressed": "concerned",
+            "fearful": "concerned",
+            "neutral": None,  # Don't change
+        }
+        target = _mood_map.get(voice_mood)
+        if target and target != self._state:
+            self._shift(target)
+
     def reset_session(self):
         """Called when JARVIS wakes up from sleep."""
         self._start_time = time.time()

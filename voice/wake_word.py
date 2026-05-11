@@ -2,9 +2,11 @@
 JARVIS — voice/wake_word.py
 Wake word detection — "Hey Jarvis" activation.
 
-Uses Google Speech Recognition in short bursts (3-sec listen windows).
+PRIORITY:
+  1. Local CNN model (ml/wake_word_model/) — <15ms, offline, trained on YOUR voice
+  2. Google Speech Recognition fallback — needs internet, slower
+
 When "jarvis" is detected, triggers the callback.
-No extra API key needed — 100% free!
 """
 
 import time
@@ -12,45 +14,73 @@ import threading
 import speech_recognition as sr
 from utils.logger import log
 
+# Try to load neural wake word detector
+try:
+    from ml.wake_word_detector import NeuralWakeWordDetector
+    _NEURAL_AVAILABLE = True
+except ImportError:
+    _NEURAL_AVAILABLE = False
+
 
 class WakeWordDetector:
     """
     Always-on "Hey Jarvis" listener.
-    Runs in background thread, low CPU usage.
-    When wake word heard → calls callback → JARVIS activates.
+    Uses local CNN if trained, Google Speech Recognition as fallback.
+    When wake word heard -> calls callback -> JARVIS activates.
     """
 
     WAKE_WORDS = ["jarvis", "hey jarvis", "hello jarvis", "jarves", "jarwis"]
 
     def __init__(self, callback=None):
-        """callback → function to call when 'Hey Jarvis' is detected."""
+        """callback -> function to call when 'Hey Jarvis' is detected."""
         self._callback    = callback
         self._running     = False
         self._thread      = None
         self._recognizer  = sr.Recognizer()
         self._mic         = None
+        self._neural      = None  # CNN-based detector
 
-        # Tune for quick, low-CPU wake word detection
+        # Try to load neural wake word model
+        if _NEURAL_AVAILABLE:
+            try:
+                self._neural = NeuralWakeWordDetector(threshold=0.85)
+                if self._neural.is_ready:
+                    log.info("Neural wake word detector ready (CNN, <15ms)")
+                else:
+                    log.info("Neural model not trained — using Google Speech fallback")
+                    self._neural = None
+            except Exception as e:
+                log.debug(f"Neural wake word init error: {e}")
+                self._neural = None
+
+        # Tune for quick, low-CPU wake word detection (fallback)
         self._recognizer.energy_threshold = 400
         self._recognizer.dynamic_energy_threshold = True
         self._recognizer.pause_threshold = 0.5       # Short pause = end
 
         try:
             self._mic = sr.Microphone()
-            log.info("Wake word mic ready ✅")
+            log.info("Wake word mic ready")
         except Exception as e:
             log.error(f"Wake word mic error: {e}")
 
     def start(self):
         """Start listening for wake word in background thread."""
+        # Use neural detector if available (CNN, <15ms, offline)
+        if self._neural:
+            self._neural.start(callback=self._callback)
+            self._running = True
+            log.info("Wake word active (CNN mode) - say 'Hey JARVIS' anytime!")
+            return
+
         if not self._mic:
-            log.warning("Wake word disabled — no microphone.")
+            log.warning("Wake word disabled - no microphone.")
             return
 
         self._running = True
         self._thread = threading.Thread(target=self._listen_loop, daemon=True)
         self._thread.start()
-        log.info("🔊 Wake word active — say 'Hey JARVIS' anytime!")
+        log.info("Wake word active (Google Speech mode) - say 'Hey JARVIS' anytime!")
 
     def stop(self):
         """Stop the wake word detector."""

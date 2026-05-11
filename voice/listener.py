@@ -27,6 +27,7 @@ class Listener:
         self._recognizer = sr.Recognizer()
         self._mic = None
         self._whisper_model = None
+        self._last_audio_np = None  # Raw audio as float32 numpy (16kHz) for ML modules
 
         # Tune recognizer for clear voice pickup
         self._recognizer.energy_threshold = 250      # Lower = picks up softer speech
@@ -97,6 +98,13 @@ class Listener:
                     timeout=timeout,
                     phrase_time_limit=config.MAX_RECORDING
                 )
+
+            # Save raw audio as numpy float32 for ML modules (voice emotion, speaker ID)
+            try:
+                raw = audio.get_raw_data(convert_rate=16000, convert_width=2)
+                self._last_audio_np = np.frombuffer(raw, dtype=np.int16).astype(np.float32) / 32768.0
+            except Exception:
+                self._last_audio_np = None
 
             log.info("Transcribing...")
 

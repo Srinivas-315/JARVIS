@@ -13,6 +13,14 @@ import re
 from datetime import datetime
 from utils.logger import log
 
+# Vector memory for RAG (lazy-loaded)
+try:
+    from brain.vector_memory import VectorMemory
+    _VECTOR_MEMORY = VectorMemory()
+except Exception as _e:
+    log.info(f"VectorMemory not available: {_e}")
+    _VECTOR_MEMORY = None
+
 # Where long-term memory is stored
 MEMORY_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data")
 FACTS_FILE = os.path.join(MEMORY_DIR, "user_memory.json")
@@ -31,7 +39,7 @@ class ConversationMemory:
     # SHORT-TERM MEMORY (current session context)
     # ═══════════════════════════════════════════════════════════
 
-    def add_user_message(self, text: str):
+    def add_user_message(self, text: str, intent: str = ""):
         """Remember what the user said."""
         self._short_term.append({
             "role": "user",
@@ -42,10 +50,14 @@ class ConversationMemory:
         if len(self._short_term) > self._max * 2:
             self._short_term = self._short_term[-self._max * 2:]
 
+        # Store in vector memory for RAG
+        if _VECTOR_MEMORY and _VECTOR_MEMORY.is_ready:
+            _VECTOR_MEMORY.store(text, role="user", intent=intent)
+
         # Check if user shared a personal fact
         self._detect_and_save_fact(text)
 
-    def add_jarvis_message(self, text: str):
+    def add_jarvis_message(self, text: str, intent: str = ""):
         """Remember what JARVIS said."""
         self._short_term.append({
             "role": "assistant",
@@ -54,6 +66,10 @@ class ConversationMemory:
         })
         if len(self._short_term) > self._max * 2:
             self._short_term = self._short_term[-self._max * 2:]
+
+        # Store in vector memory for RAG
+        if _VECTOR_MEMORY and _VECTOR_MEMORY.is_ready:
+            _VECTOR_MEMORY.store(text, role="assistant", intent=intent)
 
     def get_context_messages(self) -> list:
         """Get recent messages for LLM context."""
@@ -77,6 +93,22 @@ class ConversationMemory:
             role = "User" if m["role"] == "user" else "JARVIS"
             lines.append(f"{role}: {m['content'][:80]}")
         return "\n".join(lines)
+
+    def get_relevant_history(self, query: str, top_k: int = 5) -> str:
+        """Search vector memory for relevant past conversations (RAG)."""
+        if _VECTOR_MEMORY and _VECTOR_MEMORY.is_ready:
+            return _VECTOR_MEMORY.get_context_for_prompt(query, top_k=top_k)
+        return ""
+
+    def get_memory_stats(self) -> dict:
+        """Get combined memory statistics."""
+        stats = {
+            "short_term_msgs": len(self._short_term),
+            "long_term_facts": len(self._facts),
+        }
+        if _VECTOR_MEMORY and _VECTOR_MEMORY.is_ready:
+            stats["vector_memory"] = _VECTOR_MEMORY.get_stats()
+        return stats
 
     # ═══════════════════════════════════════════════════════════
     # LONG-TERM MEMORY (personal facts — saved to disk)

@@ -400,6 +400,46 @@ class GeminiHandler:
             for k, _ in oldest[:20]:
                 del _CACHE[k]
 
+    # ── Fast intent routing (SmartRouter) ────────────────────
+    def ask_quick(self, prompt: str, max_tokens: int = 200) -> str | None:
+        """
+        Ultra-fast Gemini call for intent routing.
+        No history, no personality, no caching — just raw classification.
+        Used by SmartRouter for ~100-200ms intent classification.
+        """
+        key = self._active_key
+        if not key:
+            return None
+        try:
+            # Use the fastest model
+            model = "gemini-2.0-flash-lite"
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+            headers = {"x-goog-api-key": key, "Content-Type": "application/json"}
+            body = {
+                "contents": [{"parts": [{"text": prompt}]}],
+                "generationConfig": {
+                    "maxOutputTokens": max_tokens,
+                    "temperature": 0.1,
+                },
+            }
+            resp = requests.post(url, json=body, headers=headers, timeout=5)
+            if resp.status_code == 200:
+                parts = resp.json().get("candidates", [{}])[0].get("content", {}).get("parts", [])
+                if parts:
+                    return parts[-1].get("text", "").strip()
+            # Fallback to flash
+            if resp.status_code in (404, 429):
+                model = "gemini-2.0-flash"
+                url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+                resp = requests.post(url, json=body, headers=headers, timeout=5)
+                if resp.status_code == 200:
+                    parts = resp.json().get("candidates", [{}])[0].get("content", {}).get("parts", [])
+                    if parts:
+                        return parts[-1].get("text", "").strip()
+        except Exception as e:
+            log.debug(f"ask_quick failed: {e}")
+        return None
+
     # ── API cost tracker ─────────────────────────────────────
     def _track_usage(self, prompt: str, response: str):
         today = str(date.today())
@@ -819,6 +859,141 @@ class GeminiHandler:
 
         log.error("All Gemini retry attempts failed.")
         return ""
+
+    # ── Streaming response (speak as sentences arrive) ────────
+    def ask_streaming(self, prompt: str, context: str = "", on_sentence=None) -> str:
+        """
+        Stream Gemini response sentence-by-sentence.
+        Calls on_sentence(sentence) for each complete sentence so JARVIS
+        can speak it immediately while the rest is still generating.
+
+        Falls back to normal ask() if streaming isn't available.
+        Returns the full concatenated response.
+
+        Args:
+            prompt: User's message
+            context: Optional RAG/vector context
+            on_sentence: Callback(str) called for each sentence chunk
+        """
+        # If no Gemini key or no callback, fall back to normal ask
+        if not self._working_model or not self._active_key or not on_sentence:
+            return self.ask(prompt, context)
+
+        # Build the full prompt (same as normal ask)
+        system = self._get_system_prompt()
+        prefs = self._user_prefs.get_all()
+        if prefs:
+            pref_lines = [f"  {k}: {v}" for k, v in prefs.items() if v]
+            system += "\nUser preferences:\n" + "\n".join(pref_lines) + "\n"
+
+        self._compress_history_if_needed()
+        history = self._build_history_context()
+
+        full_text = f"{system}\n\n"
+        if history:
+            full_text += f"Conversation so far:\n{history}\n\n"
+        if context:
+            full_text += f"Context: {context}\n\n"
+        full_text += f"User: {prompt}\nJARVIS:"
+
+        # Use Gemini streaming endpoint
+        model = self._route_model(prompt)
+        key = self._active_key
+
+        try:
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:streamGenerateContent?alt=sse"
+            headers = {"x-goog-api-key": key, "Content-Type": "application/json"}
+            body = {
+                "contents": [{"parts": [{"text": full_text}]}],
+                "generationConfig": {
+                    "temperature": config.TEMPERATURE,
+                    "maxOutputTokens": config.MAX_TOKENS,
+                },
+            }
+
+            log.info(f"Streaming from Gemini ({model})...")
+            resp = requests.post(url, json=body, headers=headers, timeout=30, stream=True)
+
+            if resp.status_code != 200:
+                log.warning(f"Streaming failed ({resp.status_code}), falling back to normal ask")
+                return self.ask(prompt, context)
+
+            import json as _json
+
+            full_response = ""
+            sentence_buffer = ""
+            sentences_sent = 0
+
+            for line in resp.iter_lines(decode_unicode=True):
+                if not line or not line.startswith("data: "):
+                    continue
+
+                data_str = line[6:]  # Remove "data: " prefix
+                if data_str.strip() == "[DONE]":
+                    break
+
+                try:
+                    chunk = _json.loads(data_str)
+                    parts = chunk.get("candidates", [{}])[0].get("content", {}).get("parts", [])
+                    for part in parts:
+                        text_chunk = part.get("text", "")
+                        if not text_chunk:
+                            continue
+                        full_response += text_chunk
+                        sentence_buffer += text_chunk
+
+                        # Check for complete sentences (., !, ?)
+                        while True:
+                            # Find the earliest sentence-ending punctuation
+                            end_idx = -1
+                            for punct in [". ", "! ", "? ", ".\n", "!\n", "?\n"]:
+                                idx = sentence_buffer.find(punct)
+                                if idx != -1 and (end_idx == -1 or idx < end_idx):
+                                    end_idx = idx + len(punct)
+
+                            if end_idx == -1:
+                                break
+
+                            sentence = sentence_buffer[:end_idx].strip()
+                            sentence_buffer = sentence_buffer[end_idx:]
+
+                            if sentence and len(sentence) > 3:
+                                sentences_sent += 1
+                                try:
+                                    on_sentence(sentence)
+                                except Exception:
+                                    pass
+                except Exception:
+                    continue
+
+            # Flush remaining buffer
+            remaining = sentence_buffer.strip()
+            if remaining and len(remaining) > 3:
+                try:
+                    on_sentence(remaining)
+                except Exception:
+                    pass
+
+            log.info(f"Streaming complete: {sentences_sent + 1} sentences, {len(full_response)} chars")
+
+            # Save to history & cache (same as normal ask)
+            if full_response:
+                self._set_cache(prompt, full_response)
+                self._track_usage(full_text, full_response)
+                if len(self._history) >= 20:
+                    self._history = self._history[-19:]
+                self._history.append({"user": prompt, "jarvis": full_response})
+                try:
+                    self._chat_history.save(user_input=prompt, jarvis_reply=full_response)
+                except Exception:
+                    pass
+
+            return full_response
+
+        except Exception as e:
+            log.warning(f"Streaming error: {e}, falling back to normal ask")
+            return self.ask(prompt, context)
+
 
     def ask_quick(self, prompt: str) -> str:
         """One-shot question without history."""

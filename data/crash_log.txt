@@ -28,3 +28,27 @@ Traceback (most recent call last):
   File "C:\Users\srini\OneDrive\Attachments\Desktop\PROJECTS\JARVIS\main.py", line 1365, in _process_command_inner
     if "notification" in text_lower and any(
 UnboundLocalError: local variable '_re_dnd' referenced before assignment
+
+============================================================
+CRASH at 2026-05-08 23:37:59.076576
+Command: 'tell me a joke'
+Traceback (most recent call last):
+  File "C:\Users\srini\OneDrive\Attachments\Desktop\PROJECTS\JARVIS\main.py", line 615, in process_command
+    raw_response = self._process_command_inner(text)
+  File "C:\Users\srini\OneDrive\Attachments\Desktop\PROJECTS\JARVIS\main.py", line 5479, in _process_command_inner
+    response = self.gemini.ask(
+  File "C:\Users\srini\OneDrive\Attachments\Desktop\PROJECTS\JARVIS\brain\gemini_handler.py", line 705, in ask
+    free_answer = self._free_api.ask(prompt, system)
+UnboundLocalError: local variable 'system' referenced before assignment
+
+============================================================
+CRASH at 2026-05-08 23:38:13.283804
+Command: 'joke'
+Traceback (most recent call last):
+  File "C:\Users\srini\OneDrive\Attachments\Desktop\PROJECTS\JARVIS\main.py", line 615, in process_command
+    raw_response = self._process_command_inner(text)
+  File "C:\Users\srini\OneDrive\Attachments\Desktop\PROJECTS\JARVIS\main.py", line 5479, in _process_command_inner
+    response = self.gemini.ask(
+  File "C:\Users\srini\OneDrive\Attachments\Desktop\PROJECTS\JARVIS\brain\gemini_handler.py", line 705, in ask
+    free_answer = self._free_api.ask(prompt, system)
+UnboundLocalError: local variable 'system' referenced before assignment

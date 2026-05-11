@@ -62,6 +62,20 @@ KOKORO_VOICE_ALIASES = {
     "female": "af",
     "american": "am_adam",
     "british female": "bf_emma",
+    # ── Edge TTS English voices (Microsoft Neural — human-like) ──
+    "edge_guy": "edge:en-US-GuyNeural",
+    "edge guy": "edge:en-US-GuyNeural",
+    "edge_jenny": "edge:en-US-JennyNeural",
+    "edge jenny": "edge:en-US-JennyNeural",
+    "edge_ryan": "edge:en-GB-RyanNeural",
+    "edge ryan": "edge:en-GB-RyanNeural",
+    "edge_aria": "edge:en-US-AriaNeural",
+    "edge aria": "edge:en-US-AriaNeural",
+    "edge_andrew": "edge:en-US-AndrewNeural",
+    "edge andrew": "edge:en-US-AndrewNeural",
+    "edge_sonia": "edge:en-GB-SoniaNeural",
+    "edge sonia": "edge:en-GB-SoniaNeural",
+    "jarvis": "edge:en-US-GuyNeural",  # "change voice to jarvis" = Guy
 }
 
 # ── pyttsx3 fallback voice map ────────────────────────────────
@@ -213,8 +227,11 @@ class Speaker:
 
         self._interrupted = False
 
-        # Route to correct TTS engine based on current language
-        if self.language_handler and not self.language_handler.is_english:
+        # Route to correct TTS engine based on current voice
+        if self._kokoro_voice.startswith("edge:"):
+            # Edge TTS English voice selected
+            self._say_edge_english(speak_text)
+        elif self.language_handler and not self.language_handler.is_english:
             # Indian language — use edge-tts
             self._say_edge(speak_text)
         elif self._use_kokoro:
@@ -400,6 +417,67 @@ class Speaker:
         except Exception as e:
             log.error(f"edge-tts speak error: {e}")
             self._say_kokoro(text)  # Kokoro fallback
+        finally:
+            with self._lock:
+                self._speaking = False
+
+    def _say_edge_english(self, text: str):
+        """Speak using Edge TTS for English neural voices (e.g. en-US-GuyNeural)."""
+        with self._lock:
+            self._speaking = True
+        try:
+            import asyncio
+            import edge_tts
+
+            # Extract the Edge voice name from kokoro_voice (format: "edge:en-US-GuyNeural")
+            edge_voice = self._kokoro_voice.split(":", 1)[-1] if ":" in self._kokoro_voice else "en-US-GuyNeural"
+
+            out_dir = _ROOT / "data" / "voice_output"
+            out_dir.mkdir(parents=True, exist_ok=True)
+            out_path = str(out_dir / f"edge_en_{abs(hash(text)) % 999999:06d}.mp3")
+
+            # Check cache
+            cache_key = f"edge_{edge_voice}_{hash(text) % 999999}"
+            if cache_key in self._wav_cache:
+                cached = self._wav_cache[cache_key]
+                if Path(cached).exists():
+                    log.info("Playing cached Edge TTS (instant!)")
+                    if not self._interrupted:
+                        self._play_mp3(cached)
+                    return
+
+            # Generate with edge-tts
+            async def _gen():
+                communicate = edge_tts.Communicate(text, edge_voice)
+                await communicate.save(out_path)
+
+            # Run async in sync context
+            try:
+                loop = asyncio.get_event_loop()
+                if loop.is_running():
+                    import concurrent.futures
+                    with concurrent.futures.ThreadPoolExecutor() as pool:
+                        pool.submit(lambda: asyncio.run(_gen())).result(timeout=15)
+                else:
+                    loop.run_until_complete(_gen())
+            except RuntimeError:
+                asyncio.run(_gen())
+
+            # Cache the result
+            if len(self._wav_cache) >= self._cache_max:
+                oldest = next(iter(self._wav_cache))
+                del self._wav_cache[oldest]
+            self._wav_cache[cache_key] = out_path
+
+            if not self._interrupted:
+                self._play_mp3(out_path)
+
+        except ImportError:
+            log.warning("edge-tts not installed — falling back to Kokoro. Run: pip install edge-tts")
+            self._say_kokoro(text)
+        except Exception as e:
+            log.error(f"Edge TTS English error: {e}")
+            self._say_kokoro(text)
         finally:
             with self._lock:
                 self._speaking = False
@@ -665,6 +743,9 @@ class Speaker:
 
     def current_voice_name(self) -> str:
         """Return current voice name."""
+        if self._kokoro_voice.startswith("edge:"):
+            edge_name = self._kokoro_voice.split(":", 1)[-1]
+            return f"{edge_name} (Edge TTS)"
         if self._use_kokoro:
             return f"{self._kokoro_voice} (Kokoro AI)"
         return "pyttsx3 default"
