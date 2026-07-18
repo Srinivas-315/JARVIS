@@ -30,6 +30,8 @@ import numpy as np
 # Ensure project root is in path (for direct execution)
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from brain.vision_handler import VisionHandler
+
 try:
     import cv2
     _CV2 = True
@@ -118,9 +120,11 @@ class GestureRecognizer:
             return {"gesture": "none", "confidence": 0, "action": None}
 
         try:
-            cap = cv2.VideoCapture(camera_id)
-            ret, frame = cap.read()
-            cap.release()
+            vh = VisionHandler()
+            with vh.acquire_camera() as cap:
+                if not cap:
+                    return {"gesture": "none", "confidence": 0, "action": None}
+                ret, frame = cap.read()
 
             if not ret:
                 return {"gesture": "none", "confidence": 0, "action": None}
@@ -256,73 +260,73 @@ class GestureRecognizer:
             print("Gesture recognition not available")
             return
 
-        cap = cv2.VideoCapture(camera_id)
-        if not cap.isOpened():
-            print("Camera not available")
-            return
+        vh = VisionHandler()
+        with vh.acquire_camera() as cap:
+            if not cap:
+                print("Camera not available")
+                return
 
-        print("Gesture Recognition — Press 'q' to quit")
-        print("Try: thumbs up, open palm, fist, peace sign, pointing up/down\n")
+            print("Gesture Recognition — Press 'q' to quit")
+            print("Try: thumbs up, open palm, fist, peace sign, pointing up/down\n")
 
-        last_gesture = "none"
-        gesture_start = 0
-        HOLD_TIME = 0.5  # Must hold gesture for 0.5s to trigger
+            last_gesture = "none"
+            gesture_start = 0
+            HOLD_TIME = 0.5  # Must hold gesture for 0.5s to trigger
 
-        while True:
-            ret, frame = cap.read()
-            if not ret:
-                break
+            while True:
+                ret, frame = cap.read()
+                if not ret:
+                    break
 
-            # Flip for mirror view
-            frame = cv2.flip(frame, 1)
+                # Flip for mirror view
+                frame = cv2.flip(frame, 1)
 
-            # Detect
-            rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            results = self._hands.process(rgb)
+                # Detect
+                rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                results = self._hands.process(rgb)
 
-            gesture = "none"
-            confidence = 0
+                gesture = "none"
+                confidence = 0
 
-            if results.multi_hand_landmarks:
-                hand = results.multi_hand_landmarks[0]
+                if results.multi_hand_landmarks:
+                    hand = results.multi_hand_landmarks[0]
 
-                # Draw hand landmarks
-                self._mp_draw.draw_landmarks(
-                    frame, hand, self._mp_hands.HAND_CONNECTIONS
-                )
+                    # Draw hand landmarks
+                    self._mp_draw.draw_landmarks(
+                        frame, hand, self._mp_hands.HAND_CONNECTIONS
+                    )
 
-                landmarks = [(lm.x, lm.y, lm.z) for lm in hand.landmark]
-                gesture, confidence = self._classify_gesture(landmarks)
+                    landmarks = [(lm.x, lm.y, lm.z) for lm in hand.landmark]
+                    gesture, confidence = self._classify_gesture(landmarks)
 
-            # Gesture hold detection
-            if gesture != "none":
-                if gesture != last_gesture:
-                    last_gesture = gesture
-                    gesture_start = time.time()
-                elif time.time() - gesture_start > HOLD_TIME:
-                    action = GESTURE_ACTIONS.get(gesture)
-                    if callback and action:
-                        callback({"gesture": gesture, "confidence": confidence, "action": action})
-                    gesture_start = time.time() + 999  # Prevent repeat
-            else:
-                last_gesture = "none"
+                # Gesture hold detection
+                if gesture != "none":
+                    if gesture != last_gesture:
+                        last_gesture = gesture
+                        gesture_start = time.time()
+                    elif time.time() - gesture_start > HOLD_TIME:
+                        action = GESTURE_ACTIONS.get(gesture)
+                        if callback and action:
+                            callback({"gesture": gesture, "confidence": confidence, "action": action})
+                        gesture_start = time.time() + 999  # Prevent repeat
+                else:
+                    last_gesture = "none"
 
-            # Draw gesture label
-            color = (0, 255, 0) if gesture != "none" else (128, 128, 128)
-            label = f"{gesture} ({confidence:.0%})" if gesture != "none" else "No gesture"
-            cv2.putText(frame, label, (10, 30),
-                       cv2.FONT_HERSHEY_SIMPLEX, 1, color, 2)
+                # Draw gesture label
+                color = (0, 255, 0) if gesture != "none" else (128, 128, 128)
+                label = f"{gesture} ({confidence:.0%})" if gesture != "none" else "No gesture"
+                cv2.putText(frame, label, (10, 30),
+                           cv2.FONT_HERSHEY_SIMPLEX, 1, color, 2)
 
-            action = GESTURE_ACTIONS.get(gesture, "")
-            if action:
-                cv2.putText(frame, f"Action: {action}", (10, 65),
-                           cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 200, 0), 2)
+                action = GESTURE_ACTIONS.get(gesture, "")
+                if action:
+                    cv2.putText(frame, f"Action: {action}", (10, 65),
+                               cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 200, 0), 2)
 
-            cv2.imshow("JARVIS — Gesture Control", frame)
-            if cv2.waitKey(1) & 0xFF == ord('q'):
-                break
+                cv2.imshow("JARVIS — Gesture Control", frame)
+                if cv2.waitKey(1) & 0xFF == ord('q'):
+                    break
 
-        cap.release()
         cv2.destroyAllWindows()
 
 

@@ -195,6 +195,112 @@ class AppControl:
             if mode_key in app_lower:
                 return self.activate_mode(mode_key)
 
+        # ── Direct App Launchers ─────────────────────────────
+        # WhatsApp
+        if "whatsapp" in app_lower:
+            try:
+                os.startfile("whatsapp://")
+                log.info("Launched WhatsApp via protocol URI")
+                return "Opening WhatsApp for you now, sir."
+            except Exception:
+                local_app_data = os.environ.get("LOCALAPPDATA", "")
+                wa_path = os.path.join(local_app_data, "WhatsApp", "WhatsApp.exe")
+                if os.path.exists(wa_path):
+                    subprocess.Popen([wa_path])
+                    log.info("Launched WhatsApp via local exe")
+                    return "Opening WhatsApp for you now, sir."
+                else:
+                    import webbrowser
+                    webbrowser.open("https://web.whatsapp.com")
+                    log.info("Launched WhatsApp Web in browser")
+                    return "Opening WhatsApp Web for you now, sir."
+
+        # VS Code
+        if any(w in app_lower for w in ["vscode", "vs code", "visual studio code"]):
+            try:
+                subprocess.Popen("code", shell=True)
+                log.info("Launched VS Code")
+                return "VS Code initialized, sir."
+            except Exception:
+                pass
+
+        # Notepad
+        if "notepad" in app_lower:
+            try:
+                subprocess.Popen("notepad.exe")
+                log.info("Launched Notepad")
+                return "Notepad opened, sir."
+            except Exception:
+                pass
+
+        # Calculator
+        if any(w in app_lower for w in ["calculator", "calc"]):
+            try:
+                os.startfile("calculator://")
+                log.info("Launched Calculator via protocol")
+                return "Calculator opened, sir."
+            except Exception:
+                try:
+                    subprocess.Popen("calc.exe")
+                    log.info("Launched Calculator via calc.exe")
+                    return "Calculator opened, sir."
+                except Exception:
+                    pass
+
+        # File Explorer
+        if any(w in app_lower for w in ["explorer", "file explorer", "my computer", "this pc", "files"]):
+            try:
+                subprocess.Popen("explorer.exe")
+                log.info("Launched File Explorer")
+                return "Opening File Explorer, sir."
+            except Exception:
+                pass
+
+        # Terminal
+        if any(w in app_lower for w in ["terminal", "cmd", "command prompt", "powershell"]):
+            try:
+                subprocess.Popen("start cmd", shell=True)
+                log.info("Launched Command Prompt")
+                return "Terminal initialized, sir."
+            except Exception:
+                pass
+
+        # Discord
+        if "discord" in app_lower:
+            try:
+                os.startfile("discord://")
+                log.info("Launched Discord via protocol")
+                return "Opening Discord, sir."
+            except Exception:
+                local_app_data = os.environ.get("LOCALAPPDATA", "")
+                discord_path = os.path.join(local_app_data, "Discord", "Update.exe")
+                if os.path.exists(discord_path):
+                    subprocess.Popen([discord_path, "--processStart", "Discord.exe"])
+                    log.info("Launched Discord via local exe")
+                    return "Opening Discord, sir."
+                else:
+                    import webbrowser
+                    webbrowser.open("https://discord.com/app")
+                    return "Opening Discord in browser, sir."
+
+        # Telegram
+        if "telegram" in app_lower:
+            try:
+                os.startfile("tg://")
+                log.info("Launched Telegram via protocol")
+                return "Opening Telegram, sir."
+            except Exception:
+                app_data = os.environ.get("APPDATA", "")
+                tg_path = os.path.join(app_data, "Telegram Desktop", "Telegram.exe")
+                if os.path.exists(tg_path):
+                    subprocess.Popen([tg_path])
+                    log.info("Launched Telegram via local exe")
+                    return "Opening Telegram, sir."
+                else:
+                    import webbrowser
+                    webbrowser.open("https://web.telegram.org")
+                    return "Opening Telegram in browser, sir."
+
         search_name = app_name.strip()
         for filler in ["open ", "launch ", "start ", "the ", "app "]:
             search_name = search_name.lower().replace(filler, "").strip()

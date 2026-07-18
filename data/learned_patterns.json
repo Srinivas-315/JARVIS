@@ -1,0 +1,105 @@
+{
+  "common_phrases": [
+    [
+      "personal facts about",
+      115
+    ],
+    [
+      "dark mode for",
+      111
+    ],
+    [
+      "national institution of",
+      108
+    ],
+    [
+      "institution of technology",
+      107
+    ],
+    [
+      "my wi-fi password",
+      106
+    ],
+    [
+      "wi-fi password is",
+      106
+    ],
+    [
+      "facts about srinivas:",
+      105
+    ],
+    [
+      "about srinivas: name:",
+      105
+    ],
+    [
+      "srinivas: name: srinivas.",
+      105
+    ],
+    [
+      "name: srinivas. age:",
+      105
+    ],
+    [
+      "srinivas. age: 21.",
+      105
+    ],
+    [
+      "age: 21. city:",
+      105
+    ],
+    [
+      "21. city: delhi.",
+      105
+    ],
+    [
+      "city: delhi. college/university:",
+      105
+    ],
+    [
+      "delhi. college/university: national",
+      105
+    ],
+    [
+      "college/university: national institution",
+      105
+    ],
+    [
+      "of technology delhi.",
+      105
+    ],
+    [
+      "technology delhi. preferences:",
+      105
+    ],
+    [
+      "delhi. preferences: you;",
+      105
+    ],
+    [
+      "preferences: you; you",
+      105
+    ]
+  ],
+  "average_response_length": 481,
+  "sentiment_distribution": {
+    "neutral": 106,
+    "positive": 19,
+    "negative": 6
+  },
+  "preferred_formality": "casual",
+  "common_greetings": [
+    "you",
+    "hey"
+  ],
+  "common_sign_offs": [
+    "personal facts about srinivas: name: srinivas. age: 21. city: delhi. college/university: national institution of technology delhi.\npreferences: you; you in whatsapp; dark mode for everything\nrecent conversation:\nsrinivas: see me and remember me\njarvis: certainly. i've got you stored away, srinivas - 21, from delhi, studying at nit delhi. i'll keep our conversations in mind, so feel free to pick up where we left off anytime. what's on your mind today, sir?\nsrinivas: notifications for me\njarvis: of course. you've got a few notifications, srinivas. i've got updates from your phone - you've got two unread emails, one from your university about an upcoming exam schedule, and another from a job portal about a potential internship. you've also got a few whatsapp messages from your friends, probably planning something for the weekend. and, by the way, i've switched to dark mode for our conversation, just the way you like it, sir.\nsrinivas: punjabi song\njarvis: as requested, playing 'punjabi song' on youtube\nsrinivas: diwali chart\njarvis: as requested, diwali chart, sir. i've got a few options for you. there's a popular one from a local chennai vendor that's been making the rounds on social media, but since you're from delhi, i think you might appreciate this one from a well-known mithai shop in the city. it's got all the classic diwali sweets like gulab jamun, jalebi, and barfi. would you like me to get the chart from that shop or would you rather explore other options?\n\nsrini says: snake game underscore gameplay",
+    "personal facts about srinivas: name: srinivas. age: 21. city: delhi. college/university: national institution of technology delhi.\npreferences: you; you in whatsapp; dark mode for everything\nrecent conversation:\nsrinivas: see me and remember me\njarvis: certainly. i've got you stored away, srinivas - 21, from delhi, studying at nit delhi. i'll keep our conversations in mind, so feel free to pick up where we left off anytime. what's on your mind today, sir?\nsrinivas: notifications for me\njarvis: of course. you've got a few notifications, srinivas. i've got updates from your phone - you've got two unread emails, one from your university about an upcoming exam schedule, and another from a job portal about a potential internship. you've also got a few whatsapp messages from your friends, probably planning something for the weekend. and, by the way, i've switched to dark mode for our conversation, just the way you like it, sir.\nsrinivas: punjabi song\njarvis: as requested, playing 'punjabi song' on youtube\nsrinivas: diwali chart\njarvis: as requested, diwali chart, sir. i've got a few options for you. there's a popular one from a local chennai vendor that's been making the rounds on social media, but since you're from delhi, i think you might appreciate this one from a well-known mithai shop in the city. it's got all the classic diwali sweets like gulab jamun, jalebi, and barfi. would you like me to get the chart from that shop or would you rather explore other options?\n\nsrini says: document"
+  ],
+  "question_types": {
+    "question": 77,
+    "statement": 53,
+    "command": 1
+  },
+  "preferred_tone": "enthusiastic"
+}

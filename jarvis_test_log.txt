@@ -1,0 +1,110 @@
+COMMAND:
+EXPECTED:
+ACTUAL:
+PASS/FAIL:
+
+=========================================
+Test Category 1: Smart Router
+=========================================
+
+Test 1:
+COMMAND: Could you shoot Bob a WhatsApp saying hello?
+EXPECTED: Routes to WhatsApp skill (not web search or clarify)
+ACTUAL: 
+PASS/FAIL: 
+
+Test 2:
+COMMAND: Send a text to Bob saying hello.
+EXPECTED: Routes to WhatsApp skill
+ACTUAL: 
+PASS/FAIL: 
+
+Test 3:
+COMMAND: Tell Bob on WhatsApp that I'll be late.
+EXPECTED: Routes to WhatsApp skill
+ACTUAL: 
+PASS/FAIL: 
+
+Test 4:
+COMMAND: Message Bob.
+EXPECTED: Clarifies which app to use or routes to default messaging
+ACTUAL: 
+PASS/FAIL: 
+
+
+=========================================
+Test Category 2: Memory
+=========================================
+
+Test 1:
+COMMAND: Remember that my Google interview is on Monday.
+EXPECTED: Saves memory successfully
+ACTUAL: 
+PASS/FAIL: 
+
+Test 2:
+COMMAND: Remember that my favorite language is Python.
+EXPECTED: Saves memory successfully
+ACTUAL: 
+PASS/FAIL: 
+
+Test 3:
+COMMAND: What is my favorite language?
+EXPECTED: Recalls "Python"
+ACTUAL: 
+PASS/FAIL: 
+
+Test 4:
+COMMAND: When is my Google interview?
+EXPECTED: Recalls "Monday"
+ACTUAL: 
+PASS/FAIL: 
+
+
+=========================================
+Test Category 3: Vision
+=========================================
+
+Test 1:
+COMMAND: Analyze this problem on my screen.
+EXPECTED: Uses screen capture, not webcam
+ACTUAL: 
+PASS/FAIL: 
+
+Test 2:
+COMMAND: What do you see on my screen?
+EXPECTED: Uses screen capture
+ACTUAL: 
+PASS/FAIL: 
+
+Test 3:
+COMMAND: Solve this coding question.
+EXPECTED: Uses screen capture to read LeetCode problem
+ACTUAL: 
+PASS/FAIL: 
+
+
+=========================================
+Test Category 4: RAG
+=========================================
+
+Test 1 (Setup):
+Provide a PDF, TXT, or Code file to JARVIS context.
+
+Test 2:
+COMMAND: What is in that document?
+EXPECTED: Analyzes the document correctly
+ACTUAL: 
+PASS/FAIL: 
+
+Test 3:
+COMMAND: Summarize it.
+EXPECTED: Summarizes document
+ACTUAL: 
+PASS/FAIL: 
+
+Test 4:
+COMMAND: What does section 3 say?
+EXPECTED: Answers specifically from document
+ACTUAL: 
+PASS/FAIL: 

@@ -14,10 +14,19 @@ from utils.logger import log
 
 def clean_text(text: str) -> str:
     """Remove unwanted characters from Gemini output for TTS."""
+    # If there is a code block, replace it with a spoken description rather than just erasing it
+    # E.g. replace ```python ... ``` with " [code block shown on screen] "
+    has_code_block = re.search(r"```", text)
+    if has_code_block:
+        text = re.sub(r"```[a-zA-Z]*\n(.*?)\n```", r" [code block shown on screen] ", text, flags=re.DOTALL)
+        text = re.sub(r"```(.*?)```", r" [code block shown on screen] ", text, flags=re.DOTALL)
+    
+    # Inline code (single backticks)
+    text = re.sub(r"`(.*?)`", r"\1", text)
+    
     # Remove markdown formatting
     text = re.sub(r"\*{1,2}(.*?)\*{1,2}", r"\1", text)  # **bold** / *italic*
     text = re.sub(r"#{1,6}\s*", "", text)  # ### headers
-    text = re.sub(r"`{1,3}.*?`{1,3}", "", text, flags=re.DOTALL)  # `code`
     text = re.sub(r"\[(.*?)\]\(.*?\)", r"\1", text)  # [links](url)
     text = re.sub(r"[-•●]\s+", "", text)  # bullet points
     text = re.sub(r"\n+", " ", text)  # newlines
@@ -33,7 +42,28 @@ def speak_friendly(text: str) -> str:
     text = text.replace("°C", " degrees Celsius")
     text = text.replace("°F", " degrees Fahrenheit")
     text = text.replace("km/h", " kilometers per hour")
-    return text
+    
+    # Remove/replace syntax/bracket tokens that sound bad when spoken
+    text = text.replace("{", " ")
+    text = text.replace("}", " ")
+    text = text.replace("[", " ")
+    text = text.replace("]", " ")
+    text = text.replace("(", ", ")
+    text = text.replace(")", ", ")
+    text = text.replace("<", " less than ")
+    text = text.replace(">", " greater than ")
+    text = text.replace(" == ", " equals ")
+    text = text.replace(" != ", " is not equal to ")
+    text = text.replace(" <= ", " less than or equal to ")
+    text = text.replace(" >= ", " greater than or equal to ")
+    text = text.replace(" + ", " plus ")
+    text = text.replace(" * ", " times ")
+    text = text.replace(" / ", " divided by ")
+    
+    # Clean up double punctuation created by replacements
+    text = re.sub(r",\s*,", ",", text)
+    text = re.sub(r"\s+", " ", text)
+    return text.strip()
 
 
 def is_question(text: str) -> bool:

@@ -26,7 +26,15 @@ class UserPrefs:
 
     def _load_defaults(self):
         """Load defaults if not already in DB."""
-        for key, value in self.DEFAULTS.items():
+        defaults = {
+            "name":          config.USER_NAME,
+            "city":          config.USER_CITY,
+            "voice_rate":    str(config.VOICE_RATE),
+            "whisper_model": config.WHISPER_MODEL,
+            "news_category": "general",
+            "greeting_done": "false",
+        }
+        for key, value in defaults.items():
             if self.get(key) is None:
                 self.set(key, value)
 

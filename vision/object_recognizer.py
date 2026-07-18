@@ -375,30 +375,10 @@ class ObjectRecognizer:
         """Open webcam, collect frames, save the sharpest one."""
         self._cleanup_captures(keep=10)
 
-        cap = self._cv2.VideoCapture(0)
-        if not cap.isOpened():
-            return None
-
-        cap.set(self._cv2.CAP_PROP_FRAME_WIDTH,  1280)
-        cap.set(self._cv2.CAP_PROP_FRAME_HEIGHT, 720)
-
-        best_frame, best_sharp = None, 0
-
-        print(f"\n  📸 Camera open — collecting frames ({countdown}s)...", flush=True)
-        for c in range(countdown, 0, -1):
-            print(f"  ⏱  {c}...", flush=True)
-            deadline = time.time() + 1.0
-            while time.time() < deadline:
-                ret, frame = cap.read()
-                if not ret:
-                    continue
-                gray  = self._cv2.cvtColor(frame, self._cv2.COLOR_BGR2GRAY)
-                sharp = self._cv2.Laplacian(gray, self._cv2.CV_64F).var()
-                if sharp > best_sharp:
-                    best_sharp = sharp
-                    best_frame = frame.copy()
-
-        cap.release()
+        from brain.vision_handler import VisionHandler
+        vh = VisionHandler()
+        print("\n  📸 Camera open — collecting frames...", flush=True)
+        best_frame, meta = vh.capture_cv2_frame()
 
         if best_frame is None:
             return None

@@ -25,6 +25,8 @@ import numpy as np
 # Ensure project root is in path (for direct execution)
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from brain.vision_handler import VisionHandler
+
 try:
     import cv2
     _CV2_AVAILABLE = True
@@ -88,13 +90,13 @@ class FaceEmotionDetector:
         start = time.time()
 
         try:
-            cap = cv2.VideoCapture(camera_id)
-            if not cap.isOpened():
-                return {"emotion": "unknown", "confidence": 0, "face_detected": False,
-                        "error": "Camera not available"}
+            vh = VisionHandler()
+            with vh.acquire_camera() as cap:
+                if not cap:
+                    return {"emotion": "unknown", "confidence": 0, "face_detected": False,
+                            "error": "Camera not available"}
 
-            ret, frame = cap.read()
-            cap.release()
+                ret, frame = cap.read()
 
             if not ret or frame is None:
                 return {"emotion": "unknown", "confidence": 0, "face_detected": False}
@@ -246,43 +248,43 @@ class FaceEmotionDetector:
             print("Face emotion not available")
             return
 
-        cap = cv2.VideoCapture(camera_id)
-        if not cap.isOpened():
-            print("Camera not available")
-            return
+        vh = VisionHandler()
+        with vh.acquire_camera() as cap:
+            if not cap:
+                print("Camera not available")
+                return
 
-        print("Face Emotion Live Feed — Press 'q' to quit")
+            print("Face Emotion Live Feed — Press 'q' to quit")
 
-        while True:
-            ret, frame = cap.read()
-            if not ret:
-                break
+            while True:
+                ret, frame = cap.read()
+                if not ret:
+                    break
 
-            result = self.detect_from_frame(frame)
+                result = self.detect_from_frame(frame)
 
-            # Draw on frame
-            if result["face_detected"]:
-                x, y, w, h = result["face_box"]
-                emotion = result["emotion"]
-                conf = result["confidence"]
+                # Draw on frame
+                if result["face_detected"]:
+                    x, y, w, h = result["face_box"]
+                    emotion = result["emotion"]
+                    conf = result["confidence"]
 
-                # Draw face box
-                color = (0, 255, 0) if emotion == "happy" else (0, 165, 255)
-                cv2.rectangle(frame, (x, y), (x+w, y+h), color, 2)
+                    # Draw face box
+                    color = (0, 255, 0) if emotion == "happy" else (0, 165, 255)
+                    cv2.rectangle(frame, (x, y), (x+w, y+h), color, 2)
 
-                # Draw emotion label
-                label = f"{emotion} ({conf:.0%})"
-                cv2.putText(frame, label, (x, y-10),
-                           cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
+                    # Draw emotion label
+                    label = f"{emotion} ({conf:.0%})"
+                    cv2.putText(frame, label, (x, y-10),
+                               cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
 
-            if callback:
-                callback(result)
+                if callback:
+                    callback(result)
 
-            cv2.imshow("JARVIS — Face Emotion", frame)
-            if cv2.waitKey(1) & 0xFF == ord('q'):
-                break
+                cv2.imshow("JARVIS — Face Emotion", frame)
+                if cv2.waitKey(1) & 0xFF == ord('q'):
+                    break
 
-        cap.release()
         cv2.destroyAllWindows()
 
 

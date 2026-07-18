@@ -8,6 +8,10 @@ import sys
 import time
 import os
 
+if sys.platform.startswith("win"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+
 # Ensure we're in the right directory
 os.chdir(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ".")
@@ -156,6 +160,7 @@ test("skills/telegram_bridge.py", lambda: bool(__import__('skills.telegram_bridg
 test("skills/code_memory.py", lambda: bool(__import__('skills.code_memory', fromlist=['CodeMemory'])))
 test("skills/task_chain.py", lambda: bool(__import__('skills.task_chain', fromlist=['TaskChain'])))
 test("skills/call_monitor.py", lambda: bool(__import__('skills.call_monitor', fromlist=['CallMonitor'])))
+test("skills/image_generator.py", lambda: bool(__import__('skills.image_generator', fromlist=['ImageGeneratorSkill'])))
 
 # ══════════════════════════════════════════════════════════════
 #  7. MEMORY MODULES
@@ -189,7 +194,7 @@ test("Intent model classifies 'open chrome' -> open_app", test_intent_model)
 def test_vector_memory():
     from brain.vector_memory import VectorMemory
     vm = VectorMemory()
-    vm.store("My exam is on Monday at 10am", {"type": "test"})
+    vm.store("My exam is on Monday at 10am", role="user")
     results = vm.search("when is my exam", top_k=1)
     return len(results) > 0
 test("Vector memory store + search", test_vector_memory)

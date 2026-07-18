@@ -43,19 +43,28 @@ class NotificationsChecker:
         parts = []
 
         # 1. Gmail
-        gmail_result = self._check_gmail()
-        if gmail_result:
-            parts.append(gmail_result)
+        try:
+            gmail_result = self._check_gmail()
+            if gmail_result:
+                parts.append(gmail_result)
+        except Exception as e:
+            log.error(f"Gmail checker raised an unexpected error: {e}")
 
         # 2. WhatsApp
-        wa_result = self._check_whatsapp_badge()
-        if wa_result:
-            parts.append(wa_result)
+        try:
+            wa_result = self._check_whatsapp_badge()
+            if wa_result:
+                parts.append(wa_result)
+        except Exception as e:
+            log.error(f"WhatsApp checker raised an unexpected error: {e}")
 
         # 3. Windows notifications
-        notif_result = self._check_windows_notifications()
-        if notif_result:
-            parts.append(notif_result)
+        try:
+            notif_result = self._check_windows_notifications()
+            if notif_result:
+                parts.append(notif_result)
+        except Exception as e:
+            log.error(f"Windows notifications checker raised an unexpected error: {e}")
 
         if not parts:
             return "All clear, sir. No unread messages anywhere."
@@ -73,28 +82,37 @@ class NotificationsChecker:
         results = []
 
         # 1. Gmail
-        gmail_text = self._check_gmail()
-        if gmail_text:
-            results.append({
-                "source": "gmail",
-                "raw_text": gmail_text,
-            })
+        try:
+            gmail_text = self._check_gmail()
+            if gmail_text:
+                results.append({
+                    "source": "gmail",
+                    "raw_text": gmail_text,
+                })
+        except Exception as e:
+            log.error(f"Gmail checker raised an unexpected error: {e}")
 
         # 2. WhatsApp
-        wa_text = self._check_whatsapp_badge()
-        if wa_text:
-            results.append({
-                "source": "whatsapp",
-                "raw_text": wa_text,
-            })
+        try:
+            wa_text = self._check_whatsapp_badge()
+            if wa_text:
+                results.append({
+                    "source": "whatsapp",
+                    "raw_text": wa_text,
+                })
+        except Exception as e:
+            log.error(f"WhatsApp checker raised an unexpected error: {e}")
 
         # 3. Windows notifications
-        notif_text = self._check_windows_notifications()
-        if notif_text:
-            results.append({
-                "source": "windows",
-                "raw_text": notif_text,
-            })
+        try:
+            notif_text = self._check_windows_notifications()
+            if notif_text:
+                results.append({
+                    "source": "windows",
+                    "raw_text": notif_text,
+                })
+        except Exception as e:
+            log.error(f"Windows notifications checker raised an unexpected error: {e}")
 
         return results
 
@@ -213,7 +231,10 @@ class NotificationsChecker:
         Uses the Windows Notification Database (via WhatsAppSkill).
         """
         try:
-            from skills.whatsapp import WhatsAppSkill
+            try:
+                from skills.whatsapp import WhatsAppSkill
+            except ImportError:
+                from whatsapp import WhatsAppSkill
             wa = WhatsAppSkill()
             result = wa.get_unread_count()
             if "No unread" in result or "Could not find" in result or "Error" in result:

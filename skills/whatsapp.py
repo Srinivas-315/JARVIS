@@ -29,10 +29,10 @@ _BASE_DISPLAY_NAMES: dict = {
     "sarvani": "Sarvani",
     "sarvana": "Sarvani",
     "sarwani": "Sarvani",
-    "sherwani": "Sarvani",
     "sharwana": "Sarvani",
+    "sherwani": "Sarvani",
+    "sharvani": "Sarvani",
     "sarvoni": "Sarvani",
-    "sher": "Sarvani",
     "friend": "Friend",
     "bro": "Bro",
     "boss": "Boss",
@@ -44,9 +44,14 @@ _BASE_DISPLAY_NAMES: dict = {
     "harsh": "Harsh",
     "ajay": "Ajay",
     "anidev": "Anidev",
+    "parthiv": "Pardhive",
+    "pardhiv": "Pardhive",
+    "pardhive": "Pardhive",
+    "prd hiv": "Pardhive",
+    "prdhiv": "Pardhive",
 }
 
-_CONTACTS_FILE = Path("memory/wa_contacts.json")
+_CONTACTS_FILE = Path(__file__).parent.parent / "memory" / "wa_contacts.json"
 
 
 def _load_dynamic_contacts() -> dict:
@@ -238,6 +243,214 @@ class WhatsAppSkill:
         self._auto_response_enabled: bool = False
         self._ocr_reader = None
 
+    def _focus_whatsapp(self) -> int | None:
+        """Bring WhatsApp to the foreground. Returns the hwnd on success."""
+        try:
+            import win32gui, win32con, ctypes
+            hwnd = None
+
+            def _cb(h, _):
+                nonlocal hwnd
+                if win32gui.GetClassName(h) == "WinUIDesktopWin32WindowClass":
+                    hwnd = h
+
+            win32gui.EnumWindows(_cb, None)
+            if not hwnd:
+                # Fallback: look for any window titled WhatsApp
+                def _cb2(h, _):
+                    nonlocal hwnd
+                    if not hwnd and win32gui.IsWindowVisible(h):
+                        t = win32gui.GetWindowText(h)
+                        if "WhatsApp" in t:
+                            hwnd = h
+                win32gui.EnumWindows(_cb2, None)
+
+            if hwnd:
+                win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
+                # ALT press trick to work around SetForegroundWindow restrictions
+                ctypes.windll.user32.keybd_event(0x12, 0, 0, 0)   # ALT down
+                time.sleep(0.05)
+                ctypes.windll.user32.keybd_event(0x12, 0, 2, 0)   # ALT up
+                win32gui.SetForegroundWindow(hwnd)
+                time.sleep(0.5)   # give the window time to come to front
+            return hwnd
+        except Exception as fe:
+            log.warning(f"_focus_whatsapp error: {fe}")
+            return None
+
+    def _get_window_rect(self) -> tuple | None:
+        """Helper to get WhatsApp window rect in physical screen pixels (pyautogui-compatible)."""
+        try:
+            import win32gui
+            import ctypes
+
+            # ── Make this process DPI-aware so GetWindowRect returns
+            #    physical pixels that match what pyautogui sees ─────────────
+            try:
+                # Per-monitor DPI aware (best)
+                ctypes.windll.shcore.SetProcessDpiAwareness(2)
+            except Exception:
+                try:
+                    # System DPI aware (fallback)
+                    ctypes.windll.user32.SetProcessDPIAware()
+                except Exception:
+                    pass
+
+            rect = None
+
+            def callback(hwnd, extra):
+                nonlocal rect
+                classname = win32gui.GetClassName(hwnd)
+                if classname == "WinUIDesktopWin32WindowClass":
+                    rect = win32gui.GetWindowRect(hwnd)
+                elif not rect:
+                    title = win32gui.GetWindowText(hwnd)
+                    if "WhatsApp" in title and "Root" not in title:
+                        r = win32gui.GetWindowRect(hwnd)
+                        if r[2] - r[0] > 100:
+                            rect = r
+
+            win32gui.EnumWindows(callback, None)
+
+            if rect:
+                # Sanity-check: pyautogui screen size should bound the rect.
+                # If the rect is larger (old DPI-unaware coords), scale it down.
+                import pyautogui as _pg
+                screen_w, screen_h = _pg.size()
+                left, top, right, bottom = rect
+                if right > screen_w or bottom > screen_h:
+                    # Compute scale from the screen dimensions
+                    # Use the dimension that is out of bounds to find scale
+                    scale_x = screen_w / max(right, screen_w + 1)
+                    scale_y = screen_h / max(bottom, screen_h + 1)
+                    scale = max(scale_x, scale_y)  # use the tightest scale
+                    # Also try the monitor's logical-to-physical scale
+                    try:
+                        logical_w = ctypes.windll.user32.GetSystemMetrics(0)   # SM_CXSCREEN logical
+                        if logical_w > 0:
+                            scale = screen_w / logical_w
+                    except Exception:
+                        pass
+                    rect = (
+                        int(left  * scale),
+                        int(top   * scale),
+                        int(right * scale),
+                        int(bottom * scale),
+                    )
+                    log.debug(f"DPI scale applied: {1/scale:.2f}x → rect={rect}")
+
+            return rect
+        except Exception as e:
+            log.warning(f"Error getting WhatsApp window rect: {e}")
+            return None
+
+    def _click_input_box(self) -> bool:
+        """Find the WhatsApp window rect and click the chat input box."""
+        rect = self._get_window_rect()
+        if rect:
+            try:
+                left, top, right, bottom = rect
+                width = right - left
+
+                # Clamp to visible screen
+                import pyautogui as _pg
+                sw, sh = _pg.size()
+                left   = max(left,   0)
+                top    = max(top,    0)
+                right  = min(right,  sw)
+                bottom = min(bottom, sh)
+                width  = right - left
+
+                # WhatsApp layout at the bottom bar (measured):
+                #   [sidebar ~38%] [+] [😊] [text input ........] [🎤]
+                # The text input area spans from ~50% to ~90% of window width.
+                # Click the centre of that range, 42px above the bottom.
+                input_left  = left + int(width * 0.50)
+                input_right = left + int(width * 0.90)
+                click_x = (input_left + input_right) // 2
+                click_y = bottom - 42
+
+                log.debug(f"_click_input_box: ({click_x}, {click_y})  rect=({left},{top},{right},{bottom})")
+                pyautogui.click(x=click_x, y=click_y)
+                time.sleep(0.2)
+                return True
+            except Exception as e:
+                log.warning(f"Failed to click relative input box: {e}")
+        # Fallback: use pyautogui screen centre-bottom
+        import pyautogui as _pg
+        sw, sh = _pg.size()
+        pyautogui.click(x=sw // 2, y=sh - 100)
+        time.sleep(0.2)
+        return False
+
+    def _right_click_message_area(self) -> bool:
+        """Right click message area relative to WhatsApp window rect."""
+        rect = self._get_window_rect()
+        if rect:
+            try:
+                left, top, right, bottom = rect
+                width = right - left
+                click_x = left + 400 + max(100, (width - 400)) // 2
+                click_y = bottom - 120  # message area above input box
+                pyautogui.click(x=click_x, y=click_y)
+                time.sleep(0.3)
+                pyautogui.rightClick(x=click_x, y=click_y)
+                time.sleep(0.3)
+                return True
+            except Exception as e:
+                log.warning(f"Failed to right click message area: {e}")
+        pyautogui.click(x=760, y=600)
+        time.sleep(0.3)
+        pyautogui.rightClick(x=760, y=600)
+        time.sleep(0.3)
+        return False
+
+    def verify_active_chat(self, expected_contact: str) -> bool:
+        """Verify that the currently open chat header matches the expected contact's name."""
+        display = self._resolve_contact(expected_contact)
+        try:
+            import numpy as np
+            import pyautogui as pg
+            import win32gui
+            import easyocr
+
+            rect = self._get_window_rect()
+            if not rect:
+                log.warning("Could not find WhatsApp window to verify active chat.")
+                return False
+
+            left, top = max(0, rect[0]), max(0, rect[1])
+            # Capture the chat header area relative to the window (shifted down to top + 40 to avoid cut-off text)
+            shot = pg.screenshot(region=(left + 350, top + 40, 400, 60))
+            arr = np.array(shot)
+
+            if not getattr(self, "_ocr_reader", None):
+                self._ocr_reader = easyocr.Reader(["en"], gpu=False, verbose=False)
+            texts = self._ocr_reader.readtext(arr, detail=0)
+            combined = " ".join(texts).lower().strip()
+
+            log.info(f"verify_active_chat OCR text: '{combined}' for expected: '{display}'")
+
+            display_words = [w.lower().strip() for w in re.split(r'\W+', display) if w.strip()]
+            if not display_words:
+                return False
+
+            combined_clean = re.sub(r'\W+', ' ', combined).split()
+            for word in display_words:
+                if len(word) < 2:
+                    continue
+                if word in combined_clean or word in combined:
+                    return True
+
+            for word in display_words:
+                if word in combined:
+                    return True
+
+            return False
+        except Exception as e:
+            log.error(f"verify_active_chat failed with error: {e}")
+            return False
+
     # ── Contact resolution ────────────────────────────────────────────────────
     def _resolve_contact(self, name: str) -> str:
         """Return display name for a contact alias."""
@@ -294,18 +507,40 @@ class WhatsAppSkill:
                 os.system("start whatsapp:")
                 time.sleep(4)
 
-            # Bring WhatsApp to focus using pygetwindow
+            # Bring WhatsApp to focus using precise win32 window handling
             try:
-                import pygetwindow as gw
+                import win32gui
+                import win32con
+                hwnd = None
+                def callback(h, extra):
+                    nonlocal hwnd
+                    if win32gui.GetClassName(h) == "WinUIDesktopWin32WindowClass":
+                        hwnd = h
+                win32gui.EnumWindows(callback, None)
+                if hwnd:
+                    win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
+                    time.sleep(0.2)
+                    # Push Alt key to unlock SetForegroundWindow if locked
+                    import ctypes
+                    ctypes.windll.user32.keybd_event(0x12, 0, 0, 0)
+                    time.sleep(0.05)
+                    ctypes.windll.user32.keybd_event(0x12, 0, 2, 0)
+                    win32gui.SetForegroundWindow(hwnd)
+                    time.sleep(0.5)
+            except Exception as fe:
+                log.warning(f"Failed to focus WhatsApp via Win32: {fe}")
+                # Fallback to pygetwindow
+                try:
+                    import pygetwindow as gw
 
-                wa_wins = [
-                    w for w in gw.getAllWindows() if "whatsapp" in w.title.lower()
-                ]
-                if wa_wins:
-                    wa_wins[0].activate()
-                    time.sleep(0.8)
-            except Exception:
-                pass
+                    wa_wins = [
+                        w for w in gw.getAllWindows() if "whatsapp" in w.title.lower()
+                    ]
+                    if wa_wins:
+                        wa_wins[0].activate()
+                        time.sleep(0.8)
+                except Exception:
+                    pass
 
             # Use Ctrl+F to search for contact
             pyautogui.hotkey("ctrl", "f")
@@ -324,6 +559,13 @@ class WhatsAppSkill:
         except Exception as e:
             log.error(f"_open_chat error: {e}")
             return False
+
+    def open_chat(self, contact: str) -> str:
+        """Open WhatsApp chat with a contact."""
+        display = self._resolve_contact(contact)
+        if self._open_chat(contact):
+            return f"Opened chat with {display} on WhatsApp, sir."
+        return f"Could not open chat with {display}, sir."
 
     # ── Send message ─────────────────────────────────────────────────────────
     def send_message(self, contact: str, message: str, stop_event=None) -> str:
@@ -356,8 +598,11 @@ class WhatsAppSkill:
                         time.sleep(1)
                         continue
                     return f"Could not open chat with {display}, sir."
+                # Verify active chat header is correct
+                if not self.verify_active_chat(contact):
+                    return f"Could not find contact '{display}' on WhatsApp. Aborting to prevent sending to the wrong chat."
                 # Click message box and type
-                pyautogui.click(x=760, y=660)
+                self._click_input_box()
                 time.sleep(0.3)
                 pyperclip.copy(message)
                 pyautogui.hotkey("ctrl", "v")
@@ -395,7 +640,11 @@ class WhatsAppSkill:
         display = self._resolve_contact(contact)
         if not self._open_chat(contact):
             return f"Could not open chat with {display}, sir."
+        # Verify active chat header is correct
+        if not self.verify_active_chat(contact):
+            return f"Could not find contact '{display}' on WhatsApp. Aborting to prevent sending to the wrong chat."
         try:
+            self._click_input_box()
             pyperclip.copy(emoji_char)
             pyautogui.hotkey("ctrl", "v")
             time.sleep(0.3)
@@ -410,7 +659,7 @@ class WhatsAppSkill:
     def type_in_active_chat(self, message: str, stop_event=None) -> str:
         """Type text into the currently open WhatsApp chat box."""
         try:
-            pyautogui.click(x=760, y=660)
+            self._click_input_box()
             time.sleep(0.3)
             pyperclip.copy(message)
             pyautogui.hotkey("ctrl", "v")
@@ -418,6 +667,10 @@ class WhatsAppSkill:
             return f"Typed '{message}'. Say 'send' to send or 'backspace' to edit."
         except Exception as e:
             return f"Could not type: {str(e)[:60]}"
+
+    def type_and_wait(self, text: str) -> str:
+        """Alias for type_in_active_chat matching SkillExecutor expectations."""
+        return self.type_in_active_chat(text)
 
     def send_typed_message(self) -> str:
         """Press Enter to send whatever is currently typed."""
@@ -631,34 +884,71 @@ class WhatsAppSkill:
 
     # ── Notification listener ─────────────────────────────────────────────────
     def start_notification_listener(self, callback) -> str:
-        """Start background thread watching for new WhatsApp messages via OCR."""
+        """Start background thread watching for new WhatsApp messages via Windows Notifications DB."""
         if self._notify_thread and self._notify_thread.is_alive():
             return "Notification listener already running, sir."
         self._notify_stop.clear()
 
         def _watch():
-            import easyocr
+            import asyncio
+            from winsdk.windows.ui.notifications.management import UserNotificationListener
+            from winsdk.windows.ui.notifications import KnownNotificationBindings
 
-            reader = easyocr.Reader(["en"], gpu=False, verbose=False)
-            last_text = ""
-            while not self._notify_stop.is_set():
+            async def _poll_notifications():
                 try:
-                    import numpy as np
-                    import pyautogui as pg
+                    listener = UserNotificationListener.current
+                    access = await listener.request_access_async()
+                    if access != 1:
+                        return
+                    
+                    seen_ids = set()
+                    try:
+                        notifs = await listener.get_notifications_async(1)
+                        for n in notifs:
+                            seen_ids.add(n.id)
+                    except Exception:
+                        pass
+                        
+                    whitelist = ["whatsapp", "mail", "outlook", "calendar", "reminder", "calls", "phone link"]
+                        
+                    while not self._notify_stop.is_set():
+                        try:
+                            notifs = await listener.get_notifications_async(1)
+                            current_ids = set()
+                            for n in notifs:
+                                current_ids.add(n.id)
+                                if n.id not in seen_ids:
+                                    app_name = n.app_info.display_info.display_name if n.app_info else "Unknown"
+                                    
+                                    # Check Whitelist
+                                    is_allowed = any(w in app_name.lower() for w in whitelist)
+                                    
+                                    if not is_allowed:
+                                        if not hasattr(self, "monitor_stats"):
+                                            self.monitor_stats = {"callbacks": 0, "drafts": 0, "speakers": 0, "filtered": 0, "last_time": "", "last_sender": "", "last_msg": ""}
+                                        self.monitor_stats["filtered"] += 1
+                                        seen_ids.add(n.id)
+                                        continue
 
-                    shot = pg.screenshot(region=(0, 0, 400, 200))
-                    arr = np.array(shot)
-                    texts = reader.readtext(arr, detail=0)
-                    combined = " ".join(texts)
-                    if combined != last_text and combined.strip():
-                        last_text = combined
-                        # Very basic heuristic: look for contact name
-                        lines = combined.split("\n")
-                        if len(lines) >= 2:
-                            callback(lines[0], lines[1])
+                                    binding = n.notification.visual.get_binding(KnownNotificationBindings.toast_generic)
+                                    if binding:
+                                        texts = [t.text for t in binding.get_text_elements()]
+                                        if len(texts) >= 1:
+                                            sender = texts[0]
+                                            msg = " ".join(texts[1:]) if len(texts) > 1 else ""
+                                            if "has a new notification" in sender.lower() or "has a new notification" in msg.lower():
+                                                pass # Ignore generic masked notifications
+                                            else:
+                                                callback(app_name, sender, msg)
+                                    seen_ids.add(n.id)
+                            seen_ids.intersection_update(current_ids)
+                        except Exception:
+                            pass
+                        await asyncio.sleep(1)
                 except Exception:
                     pass
-                time.sleep(5)
+
+            asyncio.run(_poll_notifications())
 
         self._notify_thread = threading.Thread(target=_watch, daemon=True)
         self._notify_thread.start()
@@ -668,14 +958,31 @@ class WhatsAppSkill:
         self._notify_stop.set()
         return "Notification listener stopped, sir."
 
+    def get_monitor_status(self) -> str:
+        listener_alive = self._notify_thread and self._notify_thread.is_alive()
+        alive_str = "Alive" if listener_alive else "Dead"
+        if not hasattr(self, "monitor_stats"):
+            self.monitor_stats = {"callbacks": 0, "drafts": 0, "speakers": 0, "filtered": 0, "last_time": "None", "last_sender": "None", "last_msg": "None"}
+        
+        return (
+            f"WhatsApp Monitor Status:\n"
+            f"- Monitor Thread: {alive_str}\n"
+            f"- Listener: {alive_str}\n"
+            f"- Last Notification Time: {self.monitor_stats.get('last_time', 'None')}\n"
+            f"- Last Sender: {self.monitor_stats.get('last_sender', 'None')}\n"
+            f"- Last Message: {self.monitor_stats.get('last_msg', 'None')}\n"
+            f"- Callbacks Triggered: {self.monitor_stats.get('callbacks', 0)}\n"
+            f"- Drafts Created: {self.monitor_stats.get('drafts', 0)}\n"
+            f"- Announcements Spoken: {self.monitor_stats.get('speakers', 0)}\n"
+            f"- Filtered Notifications: {self.monitor_stats.get('filtered', 0)}"
+        )     
+
     # ── Undo last message ─────────────────────────────────────────────────────
     def undo_last_message(self) -> str:
         """Attempt to delete-for-everyone the last sent message."""
         try:
             # Right-click the last message area
-            pyautogui.click(x=760, y=600)
-            time.sleep(0.3)
-            pyautogui.rightClick(x=760, y=600)
+            self._right_click_message_area()
             time.sleep(0.8)
             # Look for Delete option (approximate position)
             pyautogui.press("d")
@@ -768,7 +1075,18 @@ class WhatsAppSkill:
             sf.write(temp_file, recording, sample_rate)
             # Open chat and attach file
             if not self._open_chat(contact):
+                try:
+                    os.remove(temp_file)
+                except Exception:
+                    pass
                 return f"Could not open chat with {display}, sir."
+            # Verify active chat header is correct
+            if not self.verify_active_chat(contact):
+                try:
+                    os.remove(temp_file)
+                except Exception:
+                    pass
+                return f"Could not find contact '{display}' on WhatsApp. Aborting to prevent sending to the wrong chat."
             time.sleep(1.0)
             import pyautogui as pg
 
@@ -795,7 +1113,7 @@ class WhatsAppSkill:
             import pyperclip
 
             # Just type and send in active chat
-            pg.click(x=760, y=660)
+            self._click_input_box()
             time.sleep(0.3)
             pyperclip.copy(message)
             pg.hotkey("ctrl", "v")
@@ -813,7 +1131,7 @@ class WhatsAppSkill:
 
             display = self._resolve_contact(contact)
             # Right click on last message and select forward
-            pg.rightClick(x=760, y=600)
+            self._right_click_message_area()
             time.sleep(0.6)
             # Look for Forward option (press F key or use keyboard)
             pg.press("f")
@@ -866,7 +1184,18 @@ class WhatsAppSkill:
             screenshot.save(temp_path)
             # Open chat
             if not self._open_chat(contact):
+                try:
+                    os.remove(temp_path)
+                except Exception:
+                    pass
                 return f"Could not open chat with {display}, sir."
+            # Verify active chat header is correct
+            if not self.verify_active_chat(contact):
+                try:
+                    os.remove(temp_path)
+                except Exception:
+                    pass
+                return f"Could not find contact '{display}' on WhatsApp. Aborting to prevent sending to the wrong chat."
             time.sleep(1.0)
             # Attach the screenshot using Ctrl+P or drag
             pg.hotkey("ctrl", "p")
@@ -942,25 +1271,32 @@ class WhatsAppSkill:
         Check for unread messages instantly using the Windows Notification Database (wpndatabase.db).
         Extremely reliable, zero false positives, no OCR needed.
         """
-        try:
-            import os
-            import re
-            import shutil
-            import sqlite3
-            import tempfile
+        import os
+        import re
+        import shutil
+        import sqlite3
+        import tempfile
 
-            db_path = os.path.expandvars(
-                r"%LOCALAPPDATA%\Microsoft\Windows\Notifications\wpndatabase.db"
-            )
-            if not os.path.exists(db_path):
-                return "Could not find Windows notification database, sir."
+        db_path = os.path.expandvars(
+            r"%LOCALAPPDATA%\Microsoft\Windows\Notifications\wpndatabase.db"
+        )
+        if not os.path.exists(db_path):
+            return "Could not find Windows notification database, sir."
 
-            temp_db = os.path.join(tempfile.gettempdir(), "wpntemp_wa.db")
+        temp_db = os.path.join(tempfile.gettempdir(), f"wpntemp_wa_{os.getpid()}.db")
+        if os.path.exists(temp_db):
             try:
-                shutil.copy2(db_path, temp_db)
+                os.remove(temp_db)
             except Exception:
                 pass
 
+        try:
+            shutil.copy2(db_path, temp_db)
+        except Exception as e:
+            return f"Error accessing notification database: {e}"
+
+        conn = None
+        try:
             conn = sqlite3.connect(temp_db)
             c = conn.cursor()
 
@@ -978,7 +1314,6 @@ class WhatsAppSkill:
                 handlers,
             )
             row = c.fetchone()
-            conn.close()
 
             unread_count = 0
             if row:
@@ -996,6 +1331,17 @@ class WhatsAppSkill:
 
         except Exception as e:
             return f"Error checking unread messages: {str(e)[:80]}"
+        finally:
+            if conn:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+            if os.path.exists(temp_db):
+                try:
+                    os.remove(temp_db)
+                except Exception:
+                    pass
 
     def scan_all_unread_chats(self) -> str:
         """
@@ -1068,6 +1414,308 @@ class WhatsAppSkill:
         except Exception as e:
             return f"Status check failed: {str(e)[:80]}"
 
+    def focus_chat_input(self) -> str:
+        """Move cursor to the WhatsApp chat input area and focus it."""
+        if self._click_input_box():
+            return "Moved cursor to the chat input field, sir."
+        return "Could not find WhatsApp window to move the cursor, sir."
+
+    def _click_uia_element(self, title: str, control_type: str) -> bool:
+        """Helper to find and click a visible UIA element in the WhatsApp window."""
+        try:
+            import sys
+            sys.coinit_flags = 2
+            from pywinauto import Application
+            import win32gui
+            
+            hwnd = None
+            def callback(h, extra):
+                nonlocal hwnd
+                classname = win32gui.GetClassName(h)
+                if classname == "WinUIDesktopWin32WindowClass":
+                    hwnd = h
+                elif not hwnd:
+                    title = win32gui.GetWindowText(h)
+                    if "WhatsApp" in title and "Root" not in title:
+                        r = win32gui.GetWindowRect(h)
+                        if r[2] - r[0] > 100:
+                            hwnd = h
+            win32gui.EnumWindows(callback, None)
+            
+            if hwnd:
+                app = Application(backend="uia").connect(handle=hwnd)
+                win = app.window(handle=hwnd)
+                elements = win.descendants(title=title, control_type=control_type)
+                for el in elements:
+                    r = el.rectangle()
+                    if r.left > 0 and r.top > 0:
+                        el.click_input()
+                        return True
+        except Exception as e:
+            log.warning(f"UIA click failed for {title} ({control_type}): {e}")
+        return False
+
+    def open_emoji_panel(self) -> str:
+        """Open the emoji panel in WhatsApp."""
+        # ── Bring WhatsApp to the front first ─────────────────────────────
+        self._focus_whatsapp()
+        
+        # 1. Try to click Emoji selector directly (if panel is already open)
+        if self._click_uia_element("Emojis selector", "TabItem"):
+            return "Opened the WhatsApp emoji panel, sir!"
+            
+        # 2. If not visible, click the Emojis, GIFs, Stickers button first
+        if self._click_uia_element("Emojis, GIFs, Stickers", "Button"):
+            time.sleep(0.4)
+            # Try to click the Emojis selector tab now
+            if self._click_uia_element("Emojis selector", "TabItem"):
+                return "Opened the WhatsApp emoji panel, sir!"
+                
+        # 3. Fallback: coordinate-based click or system panel
+        rect = self._get_window_rect()
+        if rect:
+            try:
+                left, top, right, bottom = rect
+                import pyautogui as _pg
+                sw, sh = _pg.size()
+                left   = max(left,   0)
+                top    = max(top,    0)
+                right  = min(right,  sw)
+                bottom = min(bottom, sh)
+                width  = right - left
+                
+                # Coordinate fallback: sidebar end linear formula
+                sidebar_end = int(width * 0.277) + 101
+                emoji_btn_x = left + sidebar_end + 90
+                emoji_btn_y = bottom - 42
+                
+                log.info(f"Fallback click emoji btn at ({emoji_btn_x}, {emoji_btn_y})")
+                pyautogui.click(emoji_btn_x, emoji_btn_y)
+                time.sleep(0.3)
+                return "Opened the WhatsApp emoji panel, sir!"
+            except Exception as e:
+                log.warning(f"Coordinate fallback failed: {e}")
+                
+        pyautogui.hotkey("win", ".")
+        return "Opened the system emoji panel, sir! (WhatsApp window not found)"
+
+    def open_sticker_panel(self) -> str:
+        """Open the sticker panel in WhatsApp."""
+        # ── Bring WhatsApp to the front first ─────────────────────────────
+        self._focus_whatsapp()
+        
+        # 1. Try to click Stickers selector directly (if panel is already open)
+        if self._click_uia_element("Stickers selector", "TabItem"):
+            return "Opened the WhatsApp sticker panel, sir!"
+            
+        # 2. If not visible, click the Emojis, GIFs, Stickers button first
+        if self._click_uia_element("Emojis, GIFs, Stickers", "Button"):
+            time.sleep(0.4)
+            # Try to click the Stickers selector tab now
+            if self._click_uia_element("Stickers selector", "TabItem"):
+                return "Opened the WhatsApp sticker panel, sir!"
+                
+        # 3. Fallback: system panel
+        pyautogui.hotkey("win", ".")
+        return "Opened the system emoji and sticker panel, sir!"
+
+    def send_sticker_by_index(self, contact: str, index: int) -> str:
+        """Send a sticker by its 1-based index (e.g. 1st, 2nd, 3rd) in the stickers panel."""
+        try:
+            index = int(index)
+        except (ValueError, TypeError):
+            index = 1
+        display = self._resolve_contact(contact) if contact else "active chat"
+        
+        # 1. Open chat if contact is specified
+        if contact:
+            if not self._open_chat(contact):
+                return f"Could not open chat with {display}, sir."
+            if not self.verify_active_chat(contact):
+                return f"Could not find contact '{display}' on WhatsApp. Aborting to prevent sending to the wrong chat."
+        else:
+            # Focus WhatsApp
+            self._focus_whatsapp()
+            
+        # 2. Open sticker panel
+        self.open_sticker_panel()
+        time.sleep(0.6)
+        
+        # 3. Find all send sticker buttons
+        try:
+            import sys
+            sys.coinit_flags = 2
+            from pywinauto import Application
+            import win32gui
+            
+            hwnd = None
+            def callback(h, extra):
+                nonlocal hwnd
+                classname = win32gui.GetClassName(h)
+                if classname == "WinUIDesktopWin32WindowClass":
+                    hwnd = h
+                elif not hwnd:
+                    title = win32gui.GetWindowText(h)
+                    if "WhatsApp" in title and "Root" not in title:
+                        r = win32gui.GetWindowRect(h)
+                        if r[2] - r[0] > 100:
+                            hwnd = h
+            win32gui.EnumWindows(callback, None)
+            
+            if hwnd:
+                app = Application(backend="uia").connect(handle=hwnd)
+                win = app.window(handle=hwnd)
+                
+                # Make sure Stickers selector tab is active (click it again to be safe)
+                tabs = win.descendants(title="Stickers selector", control_type="TabItem")
+                for t in tabs:
+                    r = t.rectangle()
+                    if r.left > 0 and r.top > 0:
+                        t.click_input()
+                        time.sleep(0.5)
+                        break
+                
+                # Retrieve all send sticker buttons
+                buttons = win.descendants(control_type="Button")
+                sticker_buttons = []
+                for b in buttons:
+                    txt = b.window_text()
+                    if txt and (txt == "Send sticker" or (txt.startswith("Send ") and txt.endswith(" sticker"))):
+                        r = b.rectangle()
+                        if r.left > 0 and r.top > 0:
+                            sticker_buttons.append(b)
+                
+                if not sticker_buttons:
+                    return f"Could not find any visible stickers in the panel, sir."
+                
+                # Index is 1-based
+                idx = index - 1
+                if 0 <= idx < len(sticker_buttons):
+                    target = sticker_buttons[idx]
+                    target.click_input()
+                    time.sleep(0.5)
+                    # Close the sticker panel by pressing Esc
+                    pyautogui.press("esc")
+                    return f"Sent sticker number {index} to {display}, sir!"
+                else:
+                    return f"Invalid sticker number {index}. I found {len(sticker_buttons)} visible stickers, sir."
+        except Exception as e:
+            log.warning(f"Failed to send sticker by index: {e}")
+            
+        return f"Could not send sticker number {index} to {display}, sir."
+
+    # ── WhatsApp Draft & Approval System ──────────────────────────────────────
+    def save_draft(self, contact: str, incoming_message: str, generated_reply: str) -> int:
+        """Save a new generated reply draft to the database."""
+        try:
+            from memory.database import get_connection
+            with get_connection() as conn:
+                cur = conn.cursor()
+                cur.execute(
+                    "INSERT INTO whatsapp_drafts (contact, incoming_message, generated_reply, status) VALUES (?, ?, ?, 'pending')",
+                    (contact, incoming_message, generated_reply)
+                )
+                conn.commit()
+                return cur.lastrowid
+        except Exception as e:
+            log.error(f"Error saving WhatsApp draft: {e}")
+            return -1
+
+    def list_drafts(self) -> str:
+        """List all pending WhatsApp drafts."""
+        try:
+            from memory.database import get_connection
+            with get_connection() as conn:
+                rows = conn.execute(
+                    "SELECT id, contact, incoming_message FROM whatsapp_drafts WHERE status = 'pending' ORDER BY id ASC"
+                ).fetchall()
+            
+            if not rows:
+                return "You have no pending WhatsApp drafts, sir."
+                
+            res = "Pending WhatsApp Drafts:\n"
+            for r in rows:
+                res += f"Draft {r['id']} - From {r['contact']}: {r['incoming_message'][:30]}...\n"
+            return res.strip()
+        except Exception as e:
+            return f"Error listing drafts: {str(e)[:60]}"
+
+    def read_draft(self, draft_id: int) -> str:
+        """Read the full details of a specific WhatsApp draft."""
+        try:
+            from memory.database import get_connection
+            with get_connection() as conn:
+                row = conn.execute(
+                    "SELECT * FROM whatsapp_drafts WHERE id = ?", (draft_id,)
+                ).fetchone()
+            
+            if not row:
+                return f"Draft {draft_id} not found."
+            
+            status = row['status'].upper()
+            return (f"Draft {draft_id} ({status})\n"
+                    f"From: {row['contact']}\n"
+                    f"Incoming: {row['incoming_message']}\n"
+                    f"Reply: {row['generated_reply']}")
+        except Exception as e:
+            return f"Error reading draft: {str(e)[:60]}"
+
+    def send_draft(self, draft_id: int) -> str:
+        """Send the generated reply for a specific WhatsApp draft."""
+        try:
+            from memory.database import get_connection
+            with get_connection() as conn:
+                row = conn.execute(
+                    "SELECT * FROM whatsapp_drafts WHERE id = ? AND status = 'pending'", (draft_id,)
+                ).fetchone()
+            
+            if not row:
+                return f"Draft {draft_id} not found or is no longer pending."
+            
+            # Send message
+            contact = row['contact']
+            reply = row['generated_reply']
+            result = self.send_message(contact, reply)
+            
+            if "sent" in result.lower() or "blocked" in result.lower():
+                with get_connection() as conn:
+                    conn.execute("UPDATE whatsapp_drafts SET status = 'sent' WHERE id = ?", (draft_id,))
+                    conn.commit()
+                return f"Draft {draft_id} sent successfully."
+            else:
+                return f"Failed to send draft {draft_id}: {result}"
+        except Exception as e:
+            return f"Error sending draft: {str(e)[:60]}"
+
+    def reject_draft(self, draft_id: int) -> str:
+        """Reject a specific WhatsApp draft."""
+        try:
+            from memory.database import get_connection
+            with get_connection() as conn:
+                res = conn.execute(
+                    "UPDATE whatsapp_drafts SET status = 'rejected' WHERE id = ? AND status = 'pending'", (draft_id,)
+                )
+                conn.commit()
+                if res.rowcount > 0:
+                    return f"Draft {draft_id} has been rejected."
+                else:
+                    return f"Draft {draft_id} not found or already processed."
+        except Exception as e:
+            return f"Error rejecting draft: {str(e)[:60]}"
+
+    def clear_drafts(self) -> str:
+        """Clear all pending WhatsApp drafts."""
+        try:
+            from memory.database import get_connection
+            with get_connection() as conn:
+                res = conn.execute(
+                    "UPDATE whatsapp_drafts SET status = 'cleared' WHERE status = 'pending'"
+                )
+                conn.commit()
+                return f"Cleared {res.rowcount} pending drafts, sir."
+        except Exception as e:
+            return f"Error clearing drafts: {str(e)[:60]}"
+
     def parse_whatsapp_command(self, text: str) -> tuple:
         """
         Extract (contact, message) from natural language.
@@ -1079,6 +1727,15 @@ class WhatsAppSkill:
           3. Strict fallback: first word is a KNOWN contact alias
         """
         text_lower = text.lower().strip()
+
+        # BLACKLIST: Abort if text is just a combination of these action/system words
+        _ACTION_BLACKLIST = {
+            "check", "read", "unread", "open", "any", "new", "see",
+            "messages", "message", "inbox", "notifications", "notification",
+            "status", "my", "the", "whatsapp"
+        }
+        if all(word in _ACTION_BLACKLIST for word in text_lower.split()):
+            return "", text
 
         # Strip common noise prefixes
         for prefix in [

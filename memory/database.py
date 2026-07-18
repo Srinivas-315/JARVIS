@@ -2,10 +2,8 @@
 JARVIS — memory/database.py
 SQLite database setup and management for JARVIS memory.
 
-Uses a single connection pool with thread-safe access to prevent:
-  - Connection limit exhaustion
-  - Database lock issues
-  - Resource leaks
+Thread-safe: each call to get_connection() returns a fresh connection.
+Uses WAL mode for concurrent read/write from multiple threads.
 """
 
 import sqlite3
@@ -18,40 +16,29 @@ from utils.logger import log
 # Database file location
 DB_PATH = Path(__file__).parent.parent / "jarvis_memory.db"
 
-# ─── Connection Pooling ──────────────────────────────────────
+# ─── Backward-compat lock (kept for imports in other modules) ─
 _conn_lock = threading.Lock()
-_connection = None
 
 
 def get_connection() -> sqlite3.Connection:
     """
-    Get the singleton database connection (thread-safe).
+    Get a NEW database connection (thread-safe).
 
-    Returns the shared connection instance. SQLite handles concurrent
-    access via the database lock, and we use a thread lock for safety.
+    Each call creates a fresh sqlite3.Connection bound to the
+    calling thread. Callers MUST use it with a context manager:
+
+        with get_connection() as conn:
+            conn.execute(...)
     """
-    global _connection
-
-    # Double-check locking pattern to minimize lock contention
-    if _connection is None:
-        with _conn_lock:
-            if _connection is None:
-                _connection = _create_connection()
-
-    return _connection
-
-
-def _create_connection() -> sqlite3.Connection:
-    """Create and configure the SQLite connection."""
     try:
-        conn = sqlite3.connect(str(DB_PATH), check_same_thread=False)
+        conn = sqlite3.connect(str(DB_PATH))
         conn.row_factory = sqlite3.Row  # Enable dict-like row access
 
-        # Enable WAL mode for better concurrency (if SQLite version supports it)
+        # Enable WAL mode for better concurrency
         try:
             conn.execute("PRAGMA journal_mode=WAL")
         except Exception:
-            pass  # WAL not available in this SQLite version
+            pass
 
         return conn
     except Exception as e:
@@ -61,28 +48,22 @@ def _create_connection() -> sqlite3.Connection:
 
 def close_connection():
     """
-    Close the database connection gracefully.
-
-    Called during shutdown to ensure all transactions are committed
-    and the connection is properly cleaned up.
+    Shutdown hook — kept for backward compatibility.
+    With per-call connections, there is no singleton to close.
+    WAL checkpoint ensures all writes are flushed.
     """
-    global _connection
-
-    if _connection is not None:
-        try:
-            _connection.commit()
-            _connection.close()
-            _connection = None
-            log.info("Database connection closed")
-        except Exception as e:
-            log.error(f"Error closing database connection: {e}")
+    try:
+        with sqlite3.connect(str(DB_PATH)) as conn:
+            conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        log.info("Database WAL checkpoint completed")
+    except Exception as e:
+        log.error(f"Error during database shutdown: {e}")
 
 
 def initialize_db():
     """Create all tables if they don't exist."""
     try:
-        conn = get_connection()
-        with _conn_lock:
+        with get_connection() as conn:
             cursor = conn.cursor()
 
             # ── Conversation History ──────────────────────
@@ -117,6 +98,61 @@ def initialize_db():
                 )
             """)
 
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS recurring_reminders (
+                    id          INTEGER  PRIMARY KEY AUTOINCREMENT,
+                    message     TEXT     NOT NULL,
+                    frequency   TEXT     NOT NULL,
+                    at_time     TEXT     NOT NULL,
+                    created_at  DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS whatsapp_drafts (
+                    id               INTEGER  PRIMARY KEY AUTOINCREMENT,
+                    contact          TEXT     NOT NULL,
+                    incoming_message TEXT     NOT NULL,
+                    generated_reply  TEXT     NOT NULL,
+                    status           TEXT     DEFAULT 'pending',
+                    timestamp        DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS assistant_alerts (
+                    id          INTEGER  PRIMARY KEY AUTOINCREMENT,
+                    alert_type  TEXT     NOT NULL,
+                    message     TEXT     NOT NULL,
+                    created_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    delivered_at DATETIME
+                )
+            """)
+
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS agent_tasks (
+                    id           INTEGER  PRIMARY KEY AUTOINCREMENT,
+                    goal         TEXT     NOT NULL,
+                    plan_json    TEXT     NOT NULL,
+                    current_step INTEGER  DEFAULT 0,
+                    status       TEXT     DEFAULT 'pending',
+                    created_at   DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    updated_at   DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS scheduled_alerts (
+                    id            INTEGER  PRIMARY KEY AUTOINCREMENT,
+                    entity_id     TEXT     NOT NULL,
+                    entity_type   TEXT     NOT NULL,
+                    alert_window  TEXT     NOT NULL,
+                    target_time   DATETIME NOT NULL,
+                    delivered_at  DATETIME,
+                    UNIQUE(entity_id, entity_type, alert_window)
+                )
+            """)
+
             # ── Skills Log ───────────────────────────────
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS skill_log (
@@ -138,8 +174,7 @@ def initialize_db():
 def log_skill_use(skill: str, input_text: str, result: str):
     """Log a skill execution to the database."""
     try:
-        conn = get_connection()
-        with _conn_lock:
+        with get_connection() as conn:
             conn.execute(
                 "INSERT INTO skill_log (skill, input, result) VALUES (?, ?, ?)",
                 (skill, input_text[:200], result[:500])

@@ -383,7 +383,7 @@ def _write_training_file(data: list, path: Path):
 def _retrain_model(data: list):
     """Retrain the intent classifier with new data."""
     from sklearn.pipeline import Pipeline
-    from sklearn.svm import LinearSVC
+    from sklearn.linear_model import LogisticRegression
     from sklearn.feature_extraction.text import TfidfVectorizer
     from sklearn.model_selection import cross_val_score, train_test_split
     from sklearn.metrics import classification_report
@@ -394,9 +394,15 @@ def _retrain_model(data: list):
     labels = [l for _, l in data]
 
     # Train/test split
-    X_train, X_test, y_train, y_test = train_test_split(
-        texts, labels, test_size=0.1, random_state=42, stratify=labels
-    )
+    try:
+        X_train, X_test, y_train, y_test = train_test_split(
+            texts, labels, test_size=0.1, random_state=42, stratify=labels
+        )
+    except ValueError:
+        # Fallback if any class has only 1 sample
+        X_train, X_test, y_train, y_test = train_test_split(
+            texts, labels, test_size=0.1, random_state=42
+        )
 
     # Build model
     model = Pipeline([
@@ -406,10 +412,11 @@ def _retrain_model(data: list):
             min_df=1,
             analyzer='word',
         )),
-        ('clf', LinearSVC(
-            C=2.0,
+        ('classifier', LogisticRegression(
+            C=10.0,
             max_iter=3000,
-            class_weight='balanced'
+            class_weight='balanced',
+            solver='lbfgs'
         ))
     ])
 

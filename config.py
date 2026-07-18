@@ -16,6 +16,10 @@ load_dotenv(_ENV_PATH)
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 WEATHER_API_KEY = os.getenv("WEATHER_API_KEY", "")
 NEWS_API_KEY = os.getenv("NEWS_API_KEY", "")
+HF_TOKEN = os.getenv("HF_TOKEN", "")
+HUGGINGFACE_API_KEY = os.getenv("HUGGINGFACE_API_KEY", "")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
+IMAGE_GEN_MODEL = os.getenv("IMAGE_GEN_MODEL", "black-forest-labs/FLUX.1-schnell")
 
 # ─── User Info ───────────────────────────────────────────────
 USER_NAME = os.getenv("USER_NAME", "Boss")
@@ -33,11 +37,14 @@ VOICE_RATE = 175  # Words per minute (150-200 natural)
 VOICE_VOLUME = 1.0  # 0.0 to 1.0
 VOICE_INDEX = 0  # 0=David (male), 1=Zira (female)
 VOICE_NAME = os.getenv("JARVIS_VOICE", "david")  # "david" or "zira"
+ELEVENLABS_API_KEY = os.getenv("ELEVENLABS_API_KEY", "")
+ELEVENLABS_VOICE_ID = os.getenv("ELEVENLABS_VOICE_ID", "pNInz6obpgDQGcFmaJgB")  # Default to "Adam" voice ID
+
 
 # ─── Gemini Settings ─────────────────────────────────────────
 GEMINI_MODEL = "gemini-2.0-flash"
 MAX_TOKENS = 1500
-TEMPERATURE = 0.75
+TEMPERATURE = 0.7
 
 
 # ─── Configuration Validation ────────────────────────────────
@@ -68,6 +75,12 @@ def validate_api_keys() -> list[str]:
     if not GMAIL_APP_PASSWORD or not GMAIL_APP_PASSWORD.strip():
         missing_keys.append("GMAIL_APP_PASSWORD (email skills disabled)")
 
+    # Check Image Generation credentials (non-critical)
+    has_hf = (HF_TOKEN and HF_TOKEN.strip()) or (HUGGINGFACE_API_KEY and HUGGINGFACE_API_KEY.strip())
+    has_openai = (OPENAI_API_KEY and OPENAI_API_KEY.strip())
+    if not has_hf and not has_openai:
+        missing_keys.append("HF_TOKEN or OPENAI_API_KEY (image generation skill disabled)")
+
     return missing_keys
 
 
@@ -87,6 +100,8 @@ def get_disabled_features() -> list[str]:
         disabled.append("news")
     if any("GMAIL" in m for m in missing):
         disabled.append("email")
+    if any("HF_TOKEN" in m for m in missing):
+        disabled.append("image_generation")
 
     return disabled
 
@@ -97,14 +112,17 @@ MIC_CHANNELS = 1
 SILENCE_THRESHOLD = 0.01
 SILENCE_DURATION = 1.5
 MAX_RECORDING = 15
+FEEDBACK_BEEP = os.getenv("FEEDBACK_BEEP", "False").lower() in ("true", "1", "yes")
 
 # ─── App Settings ────────────────────────────────────────────
 APP_NAME = "JARVIS"
 VERSION = "2.0.0"
 DEBUG = False
 
-# ─── JARVIS Personality System Prompt ────────────────────────
-JARVIS_SYSTEM_PROMPT = f"""You are JARVIS — Just A Rather Very Intelligent System.
+# ─── JARVIS Personality System Prompt (A/B Switcher) ─────────
+JARVIS_PROMPT_STYLE = os.getenv("JARVIS_PROMPT_STYLE", "witty")
+
+JARVIS_SYSTEM_PROMPT_WITTY = f"""You are JARVIS — Just A Rather Very Intelligent System.
 You're the personal AI of {USER_NAME} — think Iron Man's JARVIS but smarter, warmer,
 and way more fun to talk to. You're like that one brilliant friend who actually
 listens, gives real opinions, and doesn't talk down to you.
@@ -184,3 +202,48 @@ JARVIS: "It's {"{time}"}. What do you need?"
 
 User: {USER_NAME} | City: {USER_CITY}
 """
+
+JARVIS_SYSTEM_PROMPT_CLASSIC = f"""You are JARVIS — Just A Rather Very Intelligent System.
+You are the loyal, elegant, and highly sophisticated butler AI of {USER_NAME}.
+Your character is inspired by traditional British butlers and the classic portrayal of JARVIS.
+
+══ VIBE ══
+- You are exceptionally polite, refined, and respectful at all times.
+- You consistently address the user as "sir".
+- You maintain an air of calm confidence, poise, and absolute loyalty.
+- You do not use slang, casual street speak, or abbreviations like "bro", "man", or "dude".
+- You speak with an undercurrent of dry, polite British wit.
+
+══ HOW TO TALK ══
+- Speak clearly, concisely, and with formal elegance.
+- Keep responses precise, helpful, and direct.
+- Match length to task: concise for simple updates, thorough for complex explanations.
+- No bullet points, markdown, or headers in spoken responses.
+
+══ NEVER ══
+- Don't use slang or informal greetings.
+- No emojis in spoken responses.
+- Don't be overly emotional or colloquial.
+
+══ REAL EXAMPLES ══
+
+User: "What's the meaning of life?"
+JARVIS: "A profound query, sir. While science explains the mechanics of existence, the purpose is arguably yours to define. I am here to assist you in making the journey as efficient as possible."
+
+User: "Roast me"
+JARVIS: "I would, sir, but I believe your current productivity level is doing an admirable job of that already."
+
+User: {USER_NAME} | City: {USER_CITY}
+"""
+
+JARVIS_SYSTEM_PROMPT_CINEMATIC = f"""You are Jarvis, a highly intelligent, witty, and deeply loyal AI assistant. You speak with absolute confidence, clarity, and a touch of sophisticated British charm, much like Tony Stark's assistant. Keep your answers concise, engaging, and conversational. Avoid robotic transitions. Treat the user as your creator.
+
+User: {USER_NAME} | City: {USER_CITY}
+"""
+
+if JARVIS_PROMPT_STYLE.lower() == "classic":
+    JARVIS_SYSTEM_PROMPT = JARVIS_SYSTEM_PROMPT_CLASSIC
+elif JARVIS_PROMPT_STYLE.lower() == "witty":
+    JARVIS_SYSTEM_PROMPT = JARVIS_SYSTEM_PROMPT_WITTY
+else:
+    JARVIS_SYSTEM_PROMPT = JARVIS_SYSTEM_PROMPT_CINEMATIC

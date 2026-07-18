@@ -112,7 +112,7 @@ class PersonalityLayer:
         self._emotion = emotion_engine
 
     def wrap(self, raw_response: str, emotion_state: str = "focused",
-             user_text: str = "") -> str:
+             user_text: str = "", is_llm: bool = False) -> str:
         """
         Wrap a raw AI response with personality.
         Returns the final spoken/displayed string.
@@ -129,20 +129,25 @@ class PersonalityLayer:
         if self._is_skill_output(raw_response):
             return raw_response
 
-        opener = random.choice(self._OPENERS.get(emotion_state, [""]))
-        closer = random.choice(self._CLOSERS.get(emotion_state, [""]))
+        if is_llm:
+            # For LLM responses, we trust the system prompt's custom personality.
+            # Do NOT add canned openers/closers! Just clean up the response.
+            result = raw_response.strip()
+        else:
+            opener = random.choice(self._OPENERS.get(emotion_state, [""]))
+            closer = random.choice(self._CLOSERS.get(emotion_state, [""]))
 
-        # Don't add opener if response already starts with "Sir" or similar
-        if raw_response.strip().startswith(("Sir", "Certainly", "Of course",
-                                            "I ", "The ", "Here")):
-            opener = ""
+            # Don't add opener if response already starts with "Sir" or similar
+            if raw_response.strip().startswith(("Sir", "Certainly", "Of course",
+                                                "I ", "The ", "Here")):
+                opener = ""
 
-        # Don't add closer if response ends with ? or already has a question
-        if raw_response.rstrip().endswith("?") or closer.strip().endswith("?"):
-            if raw_response.rstrip().endswith("?"):
-                closer = ""
+            # Don't add closer if response ends with ? or already has a question
+            if raw_response.rstrip().endswith("?") or closer.strip().endswith("?"):
+                if raw_response.rstrip().endswith("?"):
+                    closer = ""
 
-        result = f"{opener}{raw_response}{closer}".strip()
+            result = f"{opener}{raw_response}{closer}".strip()
 
         # Ensure first letter is capitalised
         if result:

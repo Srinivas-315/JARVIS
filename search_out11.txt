@@ -1,0 +1,26 @@
+37: from brain.gemini_handler import GeminiHandler
+150:         log.info("Connecting to Gemini AI...")
+151:         self.gemini = GeminiHandler()
+197:         # VS Code Code Writer (voice → Gemini → VS Code with animation)
+358:         # ── Wire MemorySystem ↔ PersonalMemory ↔ GeminiHandler ──
+531:           5. In-RAM caches in MemorySystem, ConversationMemory, GeminiHandler, ChatHistory
+588:             # Also clear Gemini's own chat history RAM
+595:                 log.warning(f"  Gemini history clear error: {e}")
+688:         """Warm, natural startup greeting — feels like ChatGPT/Gemini, not a robot."""
+909:         # Tries Gemini first. Falls back to keyword chain below.
+951:                     pass  # Fall through to Gemini chat below
+985:         # "what's in my hand" to silently fail, falling through to Wolfram/Gemini.
+3246:         # ── Camera Vision — Gemini AI (no disk writes, no local model) ──────
+3247:         # ALL camera commands now use vision_handler + Gemini Vision API
+3762:         # FIX: Conversational/opinion/casual markers → always Gemini, never Wikipedia
+4240:         #  VS CODE WRITER — Voice → Gemini → VS Code Animation
+5049:         # Wrap Gemini prompts in current language instruction
+5050:         # (used below in the fallback Gemini call)
+5076:                         self.app_ctrl.open_app(f"chrome person 1")  # fallback
+5279:             # Conversational / opinion / ELI5 queries → Gemini, not Wikipedia
+5650:                 # Generate the message with Gemini
+5804:                     # Use recognize_google (fast) for yes/no; Whisper fallback
+5994:         # ── Fallback: WolframAlpha → Gemini AI ──────────────────
+6018:                         # Wolfram couldn't answer — fall through to Gemini/LLM
+6034:                     # 2. Conversational / task question → Gemini with memory context
+6295:         # Windows cp1252 fallback — plain ASCII banner

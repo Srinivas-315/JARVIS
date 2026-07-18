@@ -36,6 +36,7 @@ class SkillExecutor:
         source = intent_result.get("source", "")
 
         log.info(f"SkillExecutor: {action} | entities={entities} | source={source}")
+        print(f"EXECUTOR: {intent_result}")
 
         try:
             # ── Clarification prompt (not an actual skill) ───────
@@ -64,13 +65,136 @@ class SkillExecutor:
                     return self._j.app_ctrl.close_app(app)
                 return ""
 
+            # 📱 WhatsApp Drafts & Monitor ───────────────────────────────────────────────────
+            if action == "whatsapp_monitor_status":
+                return self._j.whatsapp.get_monitor_status()
+            if action == "whatsapp_call_monitor_status":
+                if hasattr(self._j, "call_monitor") and self._j.call_monitor:
+                    return self._j.call_monitor.get_call_monitor_status()
+                return "Call monitor is not initialized, sir."
+            
+            if action == "telegram_status":
+                if hasattr(self._j, "_telegram") and self._j._telegram:
+                    return self._j._telegram.get_status()
+                return "Telegram bridge is not initialized."
+
+            # Telegram Call Controls
+            if action == "whatsapp_call_status":
+                if hasattr(self._j, "call_monitor") and self._j.call_monitor:
+                    return self._j.call_monitor.get_current_call_status()
+                return "Call monitor is not initialized."
+            
+            if action == "whatsapp_call_accept":
+                if hasattr(self._j, "call_monitor") and self._j.call_monitor:
+                    self._j.call_monitor._answer_call("WhatsApp")
+                    return "Accept command sent."
+                return "Call monitor is not initialized."
+
+            if action == "whatsapp_call_decline":
+                if hasattr(self._j, "call_monitor") and self._j.call_monitor:
+                    self._j.call_monitor._decline_call("WhatsApp")
+                    return "Decline command sent."
+                return "Call monitor is not initialized."
+            if action == "whatsapp_draft_list":
+                return self._j.whatsapp.list_drafts()
+            if action == "whatsapp_draft_clear":
+                return self._j.whatsapp.clear_drafts()
+            if action == "whatsapp_draft_read":
+                did = entities.get("draft_id")
+                if did is not None:
+                    return self._j.whatsapp.read_draft(did)
+                return ""
+            if action == "whatsapp_draft_send":
+                did = entities.get("draft_id")
+                if did is not None:
+                    return self._j.whatsapp.send_draft(did)
+                return ""
+            if action == "whatsapp_draft_reject":
+                did = entities.get("draft_id")
+                if did is not None:
+                    return self._j.whatsapp.reject_draft(did)
+                return ""
+
             # ── WhatsApp Send ────────────────────────────────────
             if action == "send_whatsapp":
                 contact = entities.get("contact", "")
                 message = entities.get("message", "")
                 if contact and message:
-                    self._j._speak(f"Sending message to {contact} on WhatsApp.")
                     return self._j.whatsapp.send_message(contact, message)
+                return ""
+
+            # ── WhatsApp Status Check ────────────────────────────
+            if action == "whatsapp_status":
+                contact = entities.get("contact", "")
+                if contact:
+                    return self._j.whatsapp.get_contact_status(contact)
+                return ""
+
+            # ── WhatsApp Schedule Message ────────────────────────
+            if action == "whatsapp_schedule":
+                contact = entities.get("contact", "")
+                message = entities.get("message", "")
+                time_str = entities.get("time", "")
+                if contact and message and time_str:
+                    return self._j.whatsapp.schedule_message(contact, message, time_str)
+                return ""
+
+            # ── WhatsApp Unread Count ────────────────────────────
+            if action == "whatsapp_unread_count":
+                return self._j.whatsapp.get_unread_count()
+
+            # ── WhatsApp Emoji Send ──────────────────────────────
+            if action == "whatsapp_emoji":
+                contact = entities.get("contact", "")
+                emoji = entities.get("emoji", "")
+                if contact and emoji:
+                    return self._j.whatsapp.send_emoji_only(contact, emoji)
+                return ""
+
+            # ── WhatsApp Send Screenshot ─────────────────────────
+            if action == "whatsapp_screenshot":
+                contact = entities.get("contact", "")
+                if contact:
+                    return self._j.whatsapp.send_screenshot(contact)
+                return ""
+
+            # ── WhatsApp Send Voice Note ─────────────────────────
+            if action == "whatsapp_voice_note":
+                contact = entities.get("contact", "")
+                duration = int(entities.get("duration", 5))
+                if contact:
+                    return self._j.whatsapp.send_voice_note(contact, duration)
+                return ""
+
+            # ── WhatsApp Undo Last Message ───────────────────────
+            if action == "whatsapp_undo":
+                return self._j.whatsapp.undo_last_message()
+
+            # ── WhatsApp Group Message ───────────────────────────
+            if action == "whatsapp_group":
+                group_name = entities.get("group_name", "")
+                message = entities.get("message", "")
+                if group_name and message:
+                    return self._j.whatsapp.send_to_group(group_name, message)
+                return ""
+
+            # ── WhatsApp Bulk Message ────────────────────────────
+            if action == "whatsapp_bulk":
+                contacts = entities.get("contacts", [])
+                if isinstance(contacts, str):
+                    contacts = [c.strip() for c in contacts.replace(",", " ").split() if c.strip()]
+                message = entities.get("message", "")
+                if contacts and message:
+                    return self._j.whatsapp.send_to_multiple(contacts, message)
+                return ""
+
+            # ── WhatsApp Translate and Send ──────────────────────
+            if action == "whatsapp_translate":
+                contact = entities.get("contact", "")
+                message = entities.get("message", "")
+                language = entities.get("language", "")
+                if contact and message and language:
+                    return self._j.whatsapp.translate_and_send(contact, message, language)
                 return ""
 
             # ── WhatsApp Read ────────────────────────────────────
@@ -86,6 +210,42 @@ class SkillExecutor:
                 contact = entities.get("contact", "")
                 if contact:
                     return self._j.whatsapp.open_chat(contact)
+                return ""
+
+            # ── WhatsApp UI Controls ──────────────────────────────
+            if action == "whatsapp_open_emoji_panel":
+                return self._j.whatsapp.open_emoji_panel()
+            if action == "whatsapp_open_sticker_panel":
+                return self._j.whatsapp.open_sticker_panel()
+            if action == "whatsapp_focus_chat_input":
+                return self._j.whatsapp.focus_chat_input()
+            if action == "whatsapp_send_sticker":
+                contact = entities.get("contact", "")
+                index = entities.get("index")
+                if index is not None:
+                    try:
+                        # Normalize index value if it is a string/numeric word
+                        idx_val = str(index).lower().strip()
+                        import re
+                        cleaned = re.sub(r"(st|nd|rd|th)$", "", idx_val).strip()
+                        if cleaned.isdigit():
+                            idx_val = int(cleaned)
+                        else:
+                            words = {
+                                "first": 1, "one": 1, "1st": 1,
+                                "second": 2, "two": 2, "2nd": 2,
+                                "third": 3, "three": 3, "3rd": 3,
+                                "fourth": 4, "four": 4, "4th": 4,
+                                "fifth": 5, "five": 5, "5th": 5,
+                                "sixth": 6, "six": 6, "6th": 6,
+                                "seventh": 7, "seven": 7, "7th": 7,
+                                "eighth": 8, "eight": 8, "8th": 8,
+                                "ninth": 9, "nine": 9, "9th": 9,
+                                "tenth": 10, "ten": 10, "10th": 10
+                            }
+                        return self._j.whatsapp.send_sticker_by_index(contact, int(idx_val))
+                    except Exception as ex:
+                        log.warning(f"Error parsing sticker index: {ex}")
                 return ""
 
             # ── Type Text ────────────────────────────────────────
@@ -169,7 +329,7 @@ class SkillExecutor:
             if action == "web_search":
                 query = entities.get("query", "")
                 if query:
-                    return self._j.browser.search(query)
+                    return self._j.web_search.search(query)
                 return ""
 
             # ── YouTube ──────────────────────────────────────────
@@ -190,7 +350,7 @@ class SkillExecutor:
                 elif "sunrise" in (w_type or "") or "sunset" in (w_type or ""):
                     return self._j.weather.get_sunrise_sunset(city)
                 else:
-                    return self._j.weather.get_weather(city)
+                    return self._j.weather.get_current(city)
 
             # ── News ─────────────────────────────────────────────
             if action == "news":
@@ -204,6 +364,24 @@ class SkillExecutor:
                     return self._j.news.get_headlines()
 
             # ── Email ────────────────────────────────────────────
+            if action.startswith("email_") or action in ["send_email", "read_email"]:
+                method_map = {
+                    "send_email": "send_email",
+                    "read_email": "read_recent_emails",
+                    "email_compose_ai": "ai_compose_and_send",
+                    "email_schedule": "schedule_email",
+                    "email_undo": "undo_send",
+                    "email_check_unread": "check_unread",
+                    "email_search": "search_emails",
+                    "email_reply": "reply_to_last",
+                    "email_forward": "forward_last",
+                    "email_delete": "delete_last_email",
+                    "email_mark_read": "mark_all_read",
+                    "email_brief": "morning_brief",
+                    "email_stats": "get_stats"
+                }
+                print(f"\n[EMAIL TRACE]\nCommand: {entities.get('raw', 'N/A')}\nAction: {action}\nEntities: {entities}\nExecutor: {action}\nMethod: EmailHandler.{method_map.get(action, 'unknown')}()\n")
+
             if action == "send_email":
                 return self._j.email.send_email(
                     entities.get("recipient", ""),
@@ -213,6 +391,54 @@ class SkillExecutor:
 
             if action == "read_email":
                 return self._j.email.read_recent_emails()
+
+            if action == "email_compose_ai":
+                return self._j.email.ai_compose_and_send(
+                    entities.get("recipient", ""),
+                    entities.get("instruction", "")
+                )
+
+            if action == "email_schedule":
+                return self._j.email.schedule_email(
+                    entities.get("recipient", ""),
+                    entities.get("subject", "Message from JARVIS"),
+                    entities.get("body", ""),
+                    entities.get("time", "")
+                )
+
+            if action == "email_undo":
+                return self._j.email.undo_send()
+
+            if action == "email_check_unread":
+                return self._j.email.check_unread()
+
+            if action == "email_search":
+                return self._j.email.search_emails(entities.get("query", ""))
+
+            if action == "email_reply":
+                return self._j.email.reply_to_last(
+                    entities.get("sender", ""),
+                    entities.get("body", "")
+                )
+
+            if action == "email_forward":
+                return self._j.email.forward_last(
+                    entities.get("sender", ""),
+                    entities.get("recipient", ""),
+                    entities.get("body", "")
+                )
+
+            if action == "email_delete":
+                return self._j.email.delete_last_email()
+
+            if action == "email_mark_read":
+                return self._j.email.mark_all_read()
+
+            if action == "email_brief":
+                return self._j.email.morning_brief()
+
+            if action == "email_stats":
+                return self._j.email.get_stats()
 
             # ── Time/Date ────────────────────────────────────────
             if action == "time_date":
@@ -248,22 +474,115 @@ class SkillExecutor:
 
             if action == "list_reminders":
                 return self._j.reminder.list_reminders()
+                
+            if action == "manage_reminders":
+                act = entities.get("action", "")
+                raw = entities.get("raw", "")
+                if act == "list":
+                    return self._j.reminder.list_reminders()
+                elif act == "delete":
+                    import re
+                    match = re.search(r'(?:delete|remove|cancel)\s+reminder\s+(O-\d+|R-\d+|\d+|\w+)', raw, re.IGNORECASE)
+                    if match:
+                        return self._j.reminder.delete_reminder(match.group(1))
+                    return self._j.reminder.delete_reminder(raw.replace("delete reminder", "").strip())
+                elif act == "edit":
+                    import re
+                    match = re.search(r'edit\s+reminder\s+(O-\d+|R-\d+|\d+)\s+(.+)', raw, re.IGNORECASE)
+                    if match:
+                        rid = match.group(1)
+                        rest = match.group(2)
+                        new_time = None
+                        new_freq = None
+                        if "to " in rest:
+                            val = rest.split("to ")[-1].strip()
+                            if any(d in val for d in ["daily", "weekly", "monthly", "monday", "morning", "evening", "hourly"]):
+                                new_freq = val
+                            else:
+                                new_time = val
+                        return self._j.reminder.edit_reminder(rid, new_time, new_freq)
+                    return "Please provide the reminder ID and new time/frequency."
+                else: # set
+                    mins, at_time, msg = self._j.reminder.parse_time_from_text(raw)
+                    if not msg:
+                        msg = "Reminder"
+                    if "every" in raw or "daily" in raw or "weekly" in raw:
+                        freq = "daily"
+                        if "weekly" in raw: freq = "weekly"
+                        if "hourly" in raw: freq = "hourly"
+                        return self._j.reminder.set_recurring_reminder(msg, freq, at_time or "09:00")
+                    return self._j.reminder.set_reminder(msg, minutes=mins, at_time=at_time)
 
             if action == "set_timer":
                 dur = entities.get("duration", "")
                 return self._j.reminder.set_timer(dur)
 
+            # ── Agent Tasks ──────────────────────────────────────
+            if action == "agent_tasks":
+                raw = entities.get("raw", "")
+                if "show" in raw or "list" in raw or "what" in raw or "my tasks" in raw:
+                    tasks = self._j.agent_manager.list_active_tasks()
+                    if not tasks:
+                        return "You have no active tasks running."
+                    t_list = "\n".join(f"Task {t['id']}: {t['goal']} (Step {t['current_step']}) - {t['status']}" for t in tasks)
+                    return f"Here are your active tasks:\n{t_list}"
+                elif "cancel" in raw or "stop" in raw:
+                    import re
+                    match = re.search(r'\b(?:task\s*)?(\d+)\b', raw)
+                    if match:
+                        tid = int(match.group(1))
+                        self._j.agent_manager.cancel_task(tid)
+                        return f"Task {tid} has been cancelled."
+                    return "Which task ID would you like to cancel?"
+                elif "resume" in raw or "continue" in raw:
+                    import re
+                    match = re.search(r'\b(?:task\s*)?(\d+)\b', raw)
+                    if match:
+                        tid = int(match.group(1))
+                        self._j.agent_manager.resume_task(tid)
+                        return f"Task {tid} has been resumed."
+                    return "Which task ID would you like to resume?"
+                elif "status" in raw:
+                    tasks = self._j.agent_manager.list_active_tasks()
+                    if not tasks:
+                        return "You have no active tasks."
+                    t_list = "\n".join(f"Task {t['id']}: {t['goal']} (Step {t['current_step']}) - {t['status']}" for t in tasks)
+                    return f"Task status:\n{t_list}"
+                return "I'm not sure what you want to do with agent tasks."
+
             # ── Calendar ─────────────────────────────────────────
             if action == "calendar_event":
-                act = entities.get("action", "view")
+                act = entities.get("action", "")
+                raw_text = entities.get("raw", "").lower()
+                
+                if not act:
+                    if "add" in raw_text or "create" in raw_text or "schedule" in raw_text:
+                        act = "add"
+                    elif "cancel" in raw_text or "delete" in raw_text or "remove" in raw_text:
+                        act = "cancel"
+                    else:
+                        act = "view"
+                        
                 if "add" in act or "create" in act:
-                    return self._j.calendar.add_event(
-                        entities.get("title", ""),
-                        entities.get("time", ""),
-                    )
+                    return self._j.calendar.add_event(raw_text)
                 elif "cancel" in act or "delete" in act:
-                    return self._j.calendar.cancel_event(entities.get("title", ""))
+                    title = entities.get("title", "")
+                    if not title:
+                        import re
+                        clean = raw_text
+                        for word in ["cancel", "delete", "remove", "event", "meeting"]:
+                            clean = clean.replace(word, "").strip()
+                        title = clean
+                    return self._j.calendar.cancel_event(title)
                 else:
+                    if "tomorrow" in raw_text:
+                        return self._j.calendar.get_tomorrow()
+                    elif "week" in raw_text:
+                        return self._j.calendar.get_this_week()
+                    elif "next" in raw_text:
+                        return self._j.calendar.get_next_event()
+                    elif "all" in raw_text:
+                        return self._j.calendar.list_all_events()
                     return self._j.calendar.get_today()
 
             # ── Vision ───────────────────────────────────────────
@@ -308,20 +627,61 @@ class SkillExecutor:
             if action == "memory":
                 act = entities.get("action", "")
                 fact = entities.get("fact", "")
+                fact_key = entities.get("fact_key", "")
+                fact_value = entities.get("fact_value", "")
+                
+                # ── Clear Memory ──
+                if "forget" in act or "clear" in act or "delete" in act:
+                    self._j._waiting_for_memory_clear = True
+                    return "Are you sure you want to delete all memory? Please reply with 'yes confirm delete'."
+                    
                 mem = getattr(self._j.gemini, '_local_llm', None)
                 mem = getattr(mem, 'memory', None) if mem else None
-                if not mem:
-                    return "Memory system not available."
-                if "recall" in act or "remember" in act:
-                    facts = mem.get_facts_prompt()
-                    return f"I remember: {facts}" if facts else "I don't know much about you yet."
-                elif "forget" in act or "clear" in act:
-                    mem.forget()
-                    return "Done. I've forgotten everything."
+                
+                # ── Store structured key-value fact ──
+                if fact_key and fact_value:
+                    if hasattr(self._j, '_personal_mem') and self._j._personal_mem:
+                        self._j._personal_mem.set(fact_key, fact_value.title())
+                    if mem:
+                        mem.add_user_message(f"my {fact_key} is {fact_value}")
+                    return f"Got it, sir. I'll remember that your {fact_key} is {fact_value.title()}."
+                    
+                # ── Store raw text fact ──
                 elif fact:
-                    mem.add_user_message(fact)
-                    return "Got it, I'll remember that."
-                return ""
+                    learned = ""
+                    if hasattr(self._j, '_personal_mem') and self._j._personal_mem:
+                        learned = self._j._personal_mem.try_learn(fact)
+                    if mem:
+                        mem.add_user_message(f"remember that {fact}" if not fact.startswith("remember") else fact)
+                    return learned if learned else "Got it, I'll remember that, sir."
+                    
+                # ── Recall facts ──
+                else:
+                    if hasattr(self._j, '_personal_mem') and self._j._personal_mem:
+                        recall_ans = self._j._personal_mem.try_recall(entities.get("raw", ""))
+                        if recall_ans:
+                            return recall_ans
+                    if mem:
+                        facts = mem.get_facts_prompt()
+                        if facts:
+                            response = facts.replace("Things I know about the user:\n- ", "").replace("\n- ", ", ")
+                            return f"I remember: {response}"
+                    return "I don't know much about you yet."
+
+            # ── Voice Switching ───────────────────────────────────
+            if action == "change_voice":
+                voice_name = entities.get("voice_name", "")
+                if voice_name and hasattr(self._j, "speaker") and self._j.speaker:
+                    result = self._j.speaker.set_voice(voice_name)
+                    # Play demo sentence in new voice
+                    import threading as _th
+                    def _demo():
+                        import time as _t
+                        _t.sleep(1.5)
+                        self._j.speaker.speak("Hello! This is my new voice. Do you like it?")
+                    _th.Thread(target=_demo, daemon=True).start()
+                    return result
+                return "Which voice? Say: change voice to George, Bella, Adam, etc."
 
             # ── Write Code ───────────────────────────────────────
             if action == "write_code":
@@ -342,15 +702,113 @@ class SkillExecutor:
 
             # ── Solve Problem ────────────────────────────────────
             if action == "solve_problem":
-                problem = entities.get("problem", "")
-                if hasattr(self._j, "problem_solver") and self._j.problem_solver:
-                    if problem:
-                        self._j._speak(f"Working on {problem}, sir.")
-                        return self._j.problem_solver.solve_by_name(problem)
+                problem = entities.get("problem", "").strip()
+                language = entities.get("language", "").strip()
+
+                # Extract language from the problem string if it was accidentally swallowed
+                if not language:
+                    for lang in ["c++", "cpp", "java", "python", "javascript", "js", "go", "rust", "c#", "csharp", "c plus plus", "cplusplus"]:
+                        if f"in {lang}" in problem.lower() or f"on {lang}" in problem.lower():
+                            language = lang
+                            break
+
+                # Normalize language
+                if language:
+                    lang_lower = language.lower().strip()
+                    if lang_lower in ["c++", "cpp", "c plus plus", "cplusplus"]:
+                        language = "C++"
+                    elif lang_lower in ["c#", "csharp", "c sharp"]:
+                        language = "C#"
+                    elif lang_lower in ["python", "py"]:
+                        language = "Python"
+                    elif lang_lower in ["java"]:
+                        language = "Java"
+                    elif lang_lower in ["javascript", "js"]:
+                        language = "JavaScript"
+                    elif lang_lower in ["typescript", "ts"]:
+                        language = "TypeScript"
+                    elif lang_lower in ["go", "golang"]:
+                        language = "Go"
+                    elif lang_lower in ["rust"]:
+                        language = "Rust"
+                    elif lang_lower in ["c"]:
+                        language = "C"
                     else:
-                        self._j._speak("Looking at your screen to solve the problem, sir.")
-                        return self._j.problem_solver.solve_from_screen()
+                        language = language.title()
+
+                # Clean the problem name. If it indicates screen solve, set problem = ""
+                screen_indicators = ["on the screen", "on my screen", "from screen", "from the screen", "on screen", "this", "this problem", "this code", "the code"]
+                prob_lower = problem.lower()
+                if any(ind in prob_lower for ind in screen_indicators) or prob_lower in ("", "problem", "code"):
+                    problem = ""
+
+                if hasattr(self._j, "problem_solver") and self._j.problem_solver:
+                    lang_msg = f" in {language}" if language else ""
+                    if problem:
+                        self._j._speak(f"Working on {problem}{lang_msg}, sir.")
+                        return self._j.problem_solver.solve_by_name(problem, language=language)
+                    else:
+                        self._j._speak(f"Looking at your screen to solve the problem{lang_msg}, sir.")
+                        return self._j.problem_solver.solve_from_screen(language=language)
                 return ""
+
+            # ── Explain From Screen ──────────────────────────────
+            if action == "explain_from_screen":
+                if hasattr(self._j, "problem_solver") and self._j.problem_solver:
+                    return self._j.problem_solver.explain_from_screen()
+                return "Problem solver is not available."
+
+            # ── Explain Solution ─────────────────────────────────
+            if action == "explain_solution":
+                if hasattr(self._j, "problem_solver") and self._j.problem_solver:
+                    return self._j.problem_solver.explain_last()
+                return "Problem solver is not available."
+
+            # ── Paste Solution ───────────────────────────────────
+            if action == "paste_solution":
+                if hasattr(self._j, "problem_solver") and self._j.problem_solver:
+                    return self._j.problem_solver.paste_solution()
+                return "Problem solver is not available."
+
+            # ── Optimize Code ────────────────────────────────────
+            if action == "optimize_code":
+                if hasattr(self._j, "problem_solver") and self._j.problem_solver:
+                    return self._j.problem_solver.optimize_from_screen()
+                return "Problem solver is not available."
+
+            # ── Debug Code ───────────────────────────────────────
+            if action == "debug_code":
+                if hasattr(self._j, "problem_solver") and self._j.problem_solver:
+                    return self._j.problem_solver.debug_from_screen()
+                return "Problem solver is not available."
+                
+            # ── Get Complexity ─────────────────────────────────────
+            if action == "get_complexity":
+                if hasattr(self._j, "problem_solver") and self._j.problem_solver:
+                    return self._j.problem_solver.get_complexity()
+                return "Problem solver is not available."
+
+            # ── Show Last Solution ─────────────────────────────────
+            if action == "show_last_solution":
+                if hasattr(self._j, "problem_solver") and self._j.problem_solver:
+                    return self._j.problem_solver.show_last_solution()
+                return "Problem solver is not available."
+
+            # ── Explain Last Problem ───────────────────────────────
+            if action == "explain_last_problem":
+                if hasattr(self._j, "problem_solver") and self._j.problem_solver:
+                    return self._j.problem_solver.explain_last_problem()
+                return "Problem solver is not available."
+
+            # ── Generate Image (AI art) ──────────────────────────────
+            if action == "generate_image":
+                prompt = entities.get("prompt", "")
+                if prompt and hasattr(self._j, "image_gen") and self._j.image_gen:
+                    self._j._speak(f"Generating the image now, sir. This may take a moment.")
+                    return self._j.image_gen.generate_image(prompt)
+                elif not prompt:
+                    return "What should I draw, sir? Please describe the image."
+                return "Image generation is not available right now, sir. Check your API keys."
 
             # ── Chat (general conversation) ──────────────────────
             if action == "chat":
@@ -401,6 +859,31 @@ class SkillExecutor:
             if action == "screen_control":
                 return self._j.screen.execute(entities.get("action", ""))
 
+            # ── Cursor Move To Element (OCR) ─────────────────────
+            if action == "move_cursor_to":
+                element = entities.get("element", entities.get("target", ""))
+                if element:
+                    from skills.screen_control import move_cursor_to_element
+                    return move_cursor_to_element(element)
+                return "Which element should I move the cursor to, sir?"
+
+            # ── Click Element By Name (OCR) ──────────────────────
+            if action == "click_element":
+                element = entities.get("element", entities.get("target", ""))
+                if element:
+                    from skills.screen_control import click_element_by_name
+                    return click_element_by_name(element)
+                return "Which element should I click, sir?"
+
+            # ── Cursor Direction Move ────────────────────────────
+            if action == "move_cursor_direction":
+                direction = entities.get("direction", "")
+                pixels = int(entities.get("pixels", 100))
+                if direction:
+                    from skills.screen_control import move_cursor_direction
+                    return move_cursor_direction(direction, pixels)
+                return "Which direction, sir? Up, down, left, or right?"
+
             # ── Shutdown/Restart ─────────────────────────────────
             if action == "shutdown_system":
                 act = entities.get("action", "")
@@ -437,6 +920,31 @@ class SkillExecutor:
                 if "dnd" in act or "disturb" in act:
                     return "Do not disturb mode activated."
                 return ""
+
+            # ── Knowledge Base / RAG ─────────────────────────────
+            if action in ("knowledge_ingest", "knowledge_search",
+                          "knowledge_ask", "knowledge_stats",
+                          "knowledge_clear"):
+                try:
+                    from skills.knowledge_base import KnowledgeBaseSkill
+                    kb = KnowledgeBaseSkill()
+                    raw_text = entities.get("raw", entities.get("query", ""))
+                    if action == "knowledge_ingest":
+                        path = entities.get("file_path", entities.get("folder_path", raw_text))
+                        return kb.handle(f"learn this file {path}")
+                    elif action == "knowledge_search":
+                        query = entities.get("query", raw_text)
+                        return kb.handle(f"search my documents for {query}")
+                    elif action == "knowledge_ask":
+                        query = entities.get("query", raw_text)
+                        return kb.handle(f"what do my notes say about {query}")
+                    elif action == "knowledge_stats":
+                        return kb.handle("how many documents do you know")
+                    elif action == "knowledge_clear":
+                        return kb.handle("forget all documents")
+                except Exception as e:
+                    log.error(f"Knowledge base error: {e}")
+                    return "Knowledge base is not available right now, sir."
 
             # ── Unknown — let old system handle ──────────────────
             log.info(f"SkillExecutor: unhandled action '{action}'")

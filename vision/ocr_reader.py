@@ -43,37 +43,16 @@ class OCRReader:
         if not self._ready:
             return "Text reading module isn't available, sir."
 
-        # Reuse camera capture from object_recognizer
         try:
             import cv2
-            import time
-
-            cap = cv2.VideoCapture(0)
-            if not cap.isOpened():
-                return "Camera isn't connected, sir."
-
-            cap.set(cv2.CAP_PROP_FRAME_WIDTH,  1280)
-            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
-
-            # Warmup + capture
-            best_frame, best_sharp = None, 0
-            print("  Reading text -- hold steady for 3 seconds...")
-            for i in range(3, 0, -1):
-                print(f"  {i}...", flush=True)
-                deadline = time.time() + 1.0
-                while time.time() < deadline:
-                    ret, frame = cap.read()
-                    if not ret:
-                        continue
-                    gray  = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-                    sharp = cv2.Laplacian(gray, cv2.CV_64F).var()
-                    if sharp > best_sharp:
-                        best_sharp = sharp
-                        best_frame = frame.copy()
-            cap.release()
+            from brain.vision_handler import VisionHandler
+            
+            vh = VisionHandler()
+            print("  Reading text -- capturing image...")
+            best_frame, meta = vh.capture_cv2_frame()
 
             if best_frame is None:
-                return "I couldn't capture the image, sir."
+                return "I couldn't capture the image from the camera, sir."
 
             # Save temp image
             tmp = str(_ROOT / "data" / "captures" / "ocr_tmp.jpg")

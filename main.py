@@ -21,9 +21,19 @@ if sys.platform == "win32":
     except Exception:
         pass  # Older Python or non-standard stream
 
+# ─── FIX: Bypass SSL Certificate Verification Globally ───────
+import ssl
+try:
+    _create_unverified_https_context = ssl._create_unverified_context
+except AttributeError:
+    pass
+else:
+    ssl._create_default_https_context = _create_unverified_https_context
+
 import re
 import time
 from datetime import datetime
+from utils.logger import log
 
 # ─── Core ────────────────────────────────────────────────────
 from pathlib import Path
@@ -90,10 +100,11 @@ from skills.weather import WeatherSkill
 from skills.web_search import WebSearch
 from skills.whatsapp import WhatsAppSkill
 from skills.wolfram import WolframSkill, is_wolfram_query
+from skills.whatsapp_handler import WhatsAppHandler
+from skills.calendar_handler import CalendarHandler
 from utils.helpers import clean_text, wait_animation
 
 # ─── Core modules ────────────────────────────────────────────
-from utils.logger import log
 from voice.listener import Listener
 
 # ─── Voice ───────────────────────────────────────────────────
@@ -174,11 +185,22 @@ class JARVIS:
         self.reminder = ReminderSkill(speak_callback=self._speak)
         self.email = EmailHandler()
         self.whatsapp = WhatsAppSkill()
+        self.whatsapp_handler = WhatsAppHandler(self.whatsapp, self)
         self.wolfram = WolframSkill()
         self.shopping = ShoppingSkill()
         self.media = MediaController()
         self.screen = ScreenController()
         self.clipboard = ClipboardSkill()
+
+        # 🎨 Image Generator — Stable Diffusion (HF) or DALL-E (OpenAI)
+        try:
+            from skills.image_generator import ImageGeneratorSkill
+            self.image_gen = ImageGeneratorSkill()
+            log.info("  🎨 ImageGenerator ready — say 'generate a car' to create AI art!")
+        except Exception as _ig_err:
+            log.warning(f"ImageGenerator unavailable: {_ig_err}")
+            self.image_gen = None
+
 
         # Start reminder scheduler in background
         self.reminder.start_scheduler()
@@ -226,6 +248,11 @@ class JARVIS:
 
         # Calendar
         self.calendar = CalendarSkill()
+        self.calendar_handler = CalendarHandler(self.calendar, self)
+
+        # Wire Personal Assistant Layer into Gemini
+        self.gemini.set_calendar(self.calendar)
+        self.gemini.set_reminder(self.reminder)
 
         # Advanced App / Window / Smart-Mode Control
         self.app_ctrl = AppControl()
@@ -238,6 +265,8 @@ class JARVIS:
             self.call_monitor = CallMonitor(
                 speak_fn=self._speak,
                 listen_fn=lambda timeout=6: self.listener.listen(timeout=timeout),
+                recent_notifs_fn=lambda: (self.notif_watcher._recent if getattr(self, "notif_watcher", None) else []),
+                is_speaking_fn=lambda: self.speaker.is_speaking,
             )
             self.call_monitor.start()
             log.info("📞 Call monitor active — WhatsApp, Phone Link, Skype, Teams")
@@ -267,12 +296,28 @@ class JARVIS:
         except Exception:
             self.face_login = None
 
+        # ── WhatsApp Draft Monitor ──
+        try:
+            self.whatsapp_handler.setup_notification_listener()
+            log.info("📱 WhatsApp monitor active — watching for incoming messages")
+        except Exception as e:
+            log.warning(f"WhatsApp monitor unavailable: {e}")
+
         # ── Smart Router (AI-powered intent classification) ──
         self.context = ConversationContext(max_history=8)
         self.smart_router = SmartRouter(self.gemini)
         self.skill_executor = SkillExecutor(self)
         self.clarifier = Clarifier()
         log.info("  SmartRouter + ContextManager + SkillExecutor initialized")
+
+        # ── Proactive Personal Assistant ──
+        try:
+            from skills.proactive_assistant import ProactiveAssistant
+            self.proactive = ProactiveAssistant(self.gemini, self._speak)
+            self.proactive.start()
+        except Exception as e:
+            log.warning(f"Proactive Assistant unavailable: {e}")
+            self.proactive = None
 
         # ── ML Intelligence Modules ─────────────────────────────
         self.voice_emotion = None
@@ -331,12 +376,22 @@ class JARVIS:
 
         log.info("=" * 50)
         log.info("  JARVIS is ONLINE and ready!")
-        log.info("=" * 50)
 
         # ── Emotion / Personality / Memory ────────────────────
         self.emotion = EmotionEngine()
         self.personality = PersonalityLayer(self.emotion)
         self.memory = MemorySystem()
+        self.gemini.set_emotion_engine(self.emotion)
+        # Initialize Agent Engine
+        try:
+            from skills.agent_engine import AgentManager
+            self.agent_manager = AgentManager(self)
+            self.agent_manager.start()
+        except Exception as e:
+            log.error(f"Agent engine init failed: {e}")
+            self.agent_manager = None
+            
+        log.info(f"All modules mapped. Booting wake-word engine...")
         self.memory.increment_session()
         log.info("  🧠 Emotion engine + memory system online.")
 
@@ -365,6 +420,23 @@ class JARVIS:
             log.info("  🔗 Memory fully wired — context injected in every AI call")
         except Exception as _wire_err:
             log.warning(f"Memory wiring error: {_wire_err}")
+
+        # ── Wire RAG Engine → GeminiHandler ──────────────────────
+        # Auto-injects relevant document context into every AI call.
+        self._rag_engine = None
+        try:
+            from brain.rag_engine import RAGEngine
+            self._rag_engine = RAGEngine()
+            self.gemini.set_rag_engine(self._rag_engine)
+            stats = self._rag_engine.get_stats()
+            log.info(f"  📚 RAG engine online — {stats.get('total_chunks', 0)} chunks from {stats.get('total_files', 0)} files")
+            
+            # Start auto-ingest in background
+            import threading
+            threading.Thread(target=self._rag_engine.auto_ingest_jarvis_data, daemon=True).start()
+        except Exception as _rag_err:
+            log.warning(f"RAG engine init error: {_rag_err}")
+            self._rag_engine = None
 
         # ── Telegram Bridge (optional — needs TELEGRAM_BOT_TOKEN) ──
         self._telegram = None
@@ -471,6 +543,14 @@ class JARVIS:
         except Exception as e:
             log.debug(f"Notification watcher cleanup: {e}")
 
+        # 5c. Stop Agent Engine
+        try:
+            if hasattr(self, "agent_manager") and self.agent_manager:
+                self.agent_manager.stop()
+                log.info("  ✓ Agent Engine stopped")
+        except Exception as e:
+            log.debug(f"Agent Engine cleanup: {e}")
+
         # 6. Stop app usage tracking
         try:
             self.app_ctrl.stop_usage_tracking()
@@ -518,6 +598,118 @@ class JARVIS:
     def is_stopped(self) -> bool:
         """Check if stop was requested — use in long-running skills."""
         return self._stop_event.is_set()
+
+    def _clear_all_jarvis_memories(self):
+        """NUCLEAR CLEAR — physically delete ALL memory files on disk + wipe all RAM caches.
+        
+        Targets:
+          1. data/personal_facts.json   (PersonalMemory)
+          2. data/jarvis_memory.json    (MemorySystem JSON facts/prefs/topics)
+          3. data/user_memory.json      (ConversationMemory long-term facts)
+          4. data/conversations_full.db (SQLite conversation log)
+          5. In-RAM caches in MemorySystem, ConversationMemory, GeminiHandler, ChatHistory
+          6. USER_NAME reset to "Sir" in config + .env
+        """
+        if not getattr(self, "_memory_delete_authorized", False):
+            log.warning("Unauthorized memory wipe attempt blocked")
+            return "Memory deletion blocked."
+
+        import os
+        log.info("🔥 NUCLEAR MEMORY CLEAR — wiping ALL memory stores...")
+
+        _data_dir = Path(__file__).parent / "data"
+
+        # ── 1. PHYSICALLY DELETE memory JSON files ────────────────
+        _mem_files = [
+            _data_dir / "personal_facts.json",
+            _data_dir / "jarvis_memory.json",
+            _data_dir / "user_memory.json",
+        ]
+        for fpath in _mem_files:
+            try:
+                if fpath.exists():
+                    fpath.unlink()
+                    log.info(f"  🗑️  Deleted {fpath.name}")
+            except Exception as e:
+                log.warning(f"  Could not delete {fpath.name}: {e}")
+
+        # ── 2. Clear MemorySystem (also wipes conversations_full.db) ──
+        if hasattr(self, "memory") and self.memory:
+            try:
+                self.memory.clear_all()
+                # Force re-init internal data so recall_all() returns empty
+                self.memory._data = {
+                    "facts": [], "preferences": {}, "topics": {},
+                    "corrections": [], "session_count": 0, "total_exchanges": 0,
+                }
+                self.memory._short_term.clear()
+            except Exception as e:
+                log.warning(f"  MemorySystem clear error: {e}")
+
+        # ── 3. Clear PersonalMemory (RAM dict) ────────────────────
+        if hasattr(self, "_personal_mem") and self._personal_mem:
+            try:
+                self._personal_mem._facts.clear()
+                self._personal_mem._save()
+            except Exception as e:
+                log.warning(f"  PersonalMemory clear error: {e}")
+
+        # ── 4. Clear the LIVE ConversationMemory on the local LLM ─
+        #    (This is the instance actually used — NOT a new one)
+        if hasattr(self, "gemini") and self.gemini:
+            try:
+                _llm = getattr(self.gemini, "_local_llm", None)
+                if _llm:
+                    _cm = getattr(_llm, "memory", None)
+                    if _cm:
+                        _cm._facts.clear()
+                        _cm._short_term.clear()
+                        _cm._save_facts()
+                        log.info("  🗑️  Cleared live ConversationMemory on local LLM")
+            except Exception as e:
+                log.warning(f"  Live ConversationMemory clear error: {e}")
+            # Also clear Gemini's own chat history RAM
+            try:
+                if hasattr(self.gemini, "_chat_history") and self.gemini._chat_history:
+                    self.gemini._chat_history.clear()
+                if hasattr(self.gemini, "_history"):
+                    self.gemini._history.clear()
+            except Exception as e:
+                log.warning(f"  Gemini history clear error: {e}")
+
+        # ── 5. Clear ChatHistory helper + UserPrefs ───────────────
+        if hasattr(self, "history") and self.history:
+            try:
+                self.history.clear()
+            except Exception as e:
+                log.warning(f"  ChatHistory clear error: {e}")
+        if hasattr(self, "prefs") and self.prefs:
+            try:
+                self.prefs.reset()
+            except Exception as e:
+                log.warning(f"  UserPrefs clear error: {e}")
+
+        # ── 6. Reset user name everywhere ─────────────────────────
+        config.USER_NAME = "Sir"
+        try:
+            env_path = _data_dir.parent / ".env"
+            if env_path.exists():
+                lines = env_path.read_text(encoding="utf-8").splitlines()
+                new_lines = []
+                found = False
+                for line in lines:
+                    if line.startswith("USER_NAME="):
+                        new_lines.append("USER_NAME=Sir")
+                        found = True
+                    else:
+                        new_lines.append(line)
+                if not found:
+                    new_lines.append("USER_NAME=Sir")
+                env_path.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
+        except Exception as _env_err:
+            log.warning(f"  .env reset error: {_env_err}")
+
+        log.info("✅ NUCLEAR CLEAR complete — all memory stores wiped.")
 
     # ─── Speaking (interruptible) ─────────────────────────────────
     def _speak(self, text: str):
@@ -697,6 +889,13 @@ class JARVIS:
                     "what have you learned about me",
                 ]
             ):
+                # Use PersonalMemory directly — clean and conversational
+                if self._personal_mem:
+                    pm_facts = self._personal_mem.get_all()
+                    if pm_facts:
+                        self._speak(self._personal_mem._recall_all())
+                        return ""
+                # Fallback to MemorySystem (still cleaner than before)
                 recall = self.memory.recall_all()
                 self._speak(recall)
                 return ""
@@ -795,6 +994,59 @@ class JARVIS:
         if not text or not text.strip():
             return ""
 
+        # ── MEMORY CLEAR CONFIRMATION ────────────────────────────────────
+        if getattr(self, "_waiting_for_memory_clear", False):
+            if text.lower().strip() == "yes confirm delete":
+                self._waiting_for_memory_clear = False
+                self._memory_delete_authorized = True
+                self._clear_all_jarvis_memories()
+                self._memory_delete_authorized = False
+                ans = "Done, sir. I've forgotten everything about you."
+                self._speak(ans)
+                return ans
+            else:
+                self._waiting_for_memory_clear = False
+                ans = "Memory deletion cancelled."
+                log.info("Memory deletion cancelled by user.")
+                self._speak(ans)
+                return ans
+
+        # ══════════════════════════════════════════════════════════
+        # 🧠 PRIORITY ZERO: Personal Memory (BEFORE SmartRouter!)
+        # Must run first so "where do I study", "my name is X" etc.
+        # are NEVER misrouted to Gemini/chat.
+        # ══════════════════════════════════════════════════════════
+        _pm_text_lower = text.lower().strip()
+        try:
+            if self._personal_mem is None:
+                from memory.personal_memory import PersonalMemory
+                self._personal_mem = PersonalMemory()
+
+            # 1. Try RECALL first ("what's my name", "where do I study", etc.)
+            _pm_recall = self._personal_mem.try_recall(text)
+            if _pm_recall:
+                if _pm_recall == "MEMORY_CLEAR_REQUESTED":
+                    self._waiting_for_memory_clear = True
+                    _pm_recall = "Are you sure you want to delete all memory? Please reply with 'yes confirm delete'."
+                self._speak(_pm_recall)
+                return ""
+
+            # 2. Try LEARN ("my name is X", "I study at NIT Delhi", etc.)
+            _pm_learn = self._personal_mem.try_learn(text)
+            if _pm_learn:
+                # Update config USER_NAME if name was learned
+                _new_name = self._personal_mem.get("name")
+                if _new_name and _new_name.lower() != "sir":
+                    import config as _cfg
+                    _cfg.USER_NAME = _new_name
+                self._speak(_pm_learn)
+                # Only return early if it looks like a single intent command
+                if not any(w in _pm_text_lower for w in ["also ", "and ", "then "]) and len(text.split()) < 15:
+                    return ""
+
+        except Exception as _pm_early_err:
+            log.warning(f"PersonalMemory early check error: {_pm_early_err}")
+
         # ══════════════════════════════════════════════════════════
         # 🧠 SMART ROUTER — AI-powered intent classification
         # Tries Gemini first. Falls back to keyword chain below.
@@ -804,7 +1056,7 @@ class JARVIS:
             self.context.add_user_input(text)
 
             # 2. AI classifies the intent
-            intent_result = self.smart_router.route(text, self.context)
+            intent_result = self.smart_router.route(text, self.context, jarvis=self)
             source = intent_result.get("source", "")
             action = intent_result.get("action", "unknown")
             confidence = intent_result.get("confidence", 0)
@@ -826,7 +1078,7 @@ class JARVIS:
                     return ""
 
             # 4. Execute via SkillExecutor if AI is confident
-            if source in ("ai", "instant", "local_ml", "clarification_complete") and confidence >= 0.6:
+            if source in ("ai", "instant", "local_ml", "clarification_complete", "keyword_override", "cache") and confidence >= 0.6:
                 # Handle special signals
                 if action == "stop":
                     self.speaker.speak("Stopping everything, sir.")
@@ -859,6 +1111,12 @@ class JARVIS:
                         return ""
 
         except Exception as e:
+            if 'action' in locals() and (action.startswith("email_") or action in ("send_email", "read_email")):
+                err_msg = str(e)
+                if not err_msg.startswith("Could not"):
+                    err_msg = f"Could not execute email command: {err_msg}"
+                self._speak(err_msg)
+                return ""
             log.warning(f"SmartRouter error (falling back to keywords): {e}")
 
         # ══════════════════════════════════════════════════════════
@@ -885,15 +1143,32 @@ class JARVIS:
             .replace("\u201d", '"')  # RIGHT DOUBLE QUOTATION MARK  "
         )
         # Also patch the original text so downstream handlers get clean text
-        text = (
-            text.replace("\u2019", "'")
-            .replace("\u2018", "'")
-            .replace("\u02bc", "'")
-            .replace("\u0060", "'")
-            .replace("\u00b4", "'")
-            .replace("\u201c", '"')
-            .replace("\u201d", '"')
-        )
+        text = text.replace("\u2019", "'")
+        # ══════════════════════════════════════════════════════════
+        # NEW HANDLERS (Task 6 Extraction)
+        # ══════════════════════════════════════════════════════════
+        _active_win = ""
+        try:
+            import pygetwindow as _gw
+            _aw = _gw.getActiveWindow()
+            _active_win = (_aw.title or "").lower() if _aw else ""
+        except Exception:
+            pass
+
+        # Call WhatsApp Handler
+        wa_response = self.whatsapp_handler.handle(text, text_lower, getattr(self, "_last_routed_intent", ""), _active_win)
+        if wa_response is not None:
+            if wa_response:
+                self._speak(wa_response)
+            return ""
+
+        # Call Calendar Handler
+        cal_response = self.calendar_handler.handle(text, text_lower)
+        if cal_response is not None:
+            if cal_response:
+                self._speak(cal_response)
+            return ""
+
 
         # ══ PRIORITY: Camera / Vision commands ══════════════
         # Checked FIRST — never fall through to LLM/Wolfram
@@ -944,6 +1219,9 @@ class JARVIS:
             "what am i looking at",
             "what's open on screen",
             "what app is this",
+            "on my screen",
+            "on the screen",
+            "on screen",
         ]
         _READ_VISION = [
             "read this",
@@ -1081,6 +1359,27 @@ class JARVIS:
         stdlib_re = re  # Alias to avoid Python scoping issue with local imports
 
         # ── Greeting Detection ────────────────────────────────
+        
+        # ── Agent Task Execution Engine Commands ──────────────
+        _agent_cmds = {
+            "show active tasks": lambda: f"You have {len(self.agent_manager.list_active_tasks())} active background tasks.",
+            "task status": lambda: f"Active tasks: {[t['goal'] for t in self.agent_manager.list_active_tasks()]}",
+            "resume task": lambda: "Resumed background tasks." if [self.agent_manager.resume_task(t['id']) for t in self.agent_manager.list_active_tasks() if t['status'] == 'waiting_user'] else "No tasks waiting.",
+            "cancel task": lambda: "Cancelled all tasks." if [self.agent_manager.cancel_task(t['id']) for t in self.agent_manager.list_active_tasks()] else "No tasks to cancel.",
+            "retry task": lambda: "Retrying tasks." if [self.agent_manager.retry_task(t['id']) for t in self.agent_manager.list_active_tasks() if t['status'] == 'failed'] else "No failed tasks to retry."
+        }
+        for cmd, func in _agent_cmds.items():
+            if text_lower == cmd:
+                res = func()
+                self._speak(res)
+                return ""
+        
+        if text_lower.startswith("start task "):
+            goal = text_lower.replace("start task ", "", 1).strip()
+            tid = self.agent_manager.add_task(goal)
+            self._speak(f"Started background task {tid} for: {goal}")
+            return ""
+
         # When user says "Hey JARVIS", "Hi", "Hello", "Good morning"
         # respond warmly instead of routing to intent parser
         _greet_triggers = [
@@ -1148,12 +1447,6 @@ class JARVIS:
             self._speak(_reply)
             return ""
 
-        # Must check BEFORE intent parsing so corrections are never misrouted
-        if self.corrector.is_correction(text):
-            response = self.corrector.learn(text)
-            self._speak(response)
-            return ""
-
         # ── Personal Memory — NO LLM, instant file-based ──────
         # "my name is X", "remember I am X", "what's my name" etc.
         try:
@@ -1162,75 +1455,23 @@ class JARVIS:
 
                 self._personal_mem = PersonalMemory()
 
-            # Try recall first (so "my name" doesn't trigger learn)
+
+            # Then try RECALL (questions: "what's my name?", "delete my info")
             recall = self._personal_mem.try_recall(text)
             if recall:
+                if recall == "MEMORY_CLEAR_REQUESTED":
+                    self._waiting_for_memory_clear = True
+                    recall = "Are you sure you want to delete all memory? Please reply with 'yes confirm delete'."
                 self._speak(recall)
-                return ""
-
-            # Try learn
-            learned = self._personal_mem.try_learn(text)
-            if learned:
-                # Sync name across ALL stores so it persists across restarts
-                if "name" in text.lower():
-                    saved_name = self._personal_mem.get("name")
-                    if saved_name:
-                        # 1. Update UserPrefs (SQLite)
-                        self.prefs.name = saved_name
-                        # 2. Update RAM config so greetings use it immediately
-                        config.USER_NAME = saved_name
-                        # 3. Persist to .env so it survives full restarts
-                        try:
-                            from pathlib import Path as _Path
-
-                            env_path = _Path(__file__).parent / ".env"
-                            if env_path.exists():
-                                lines = env_path.read_text(
-                                    encoding="utf-8"
-                                ).splitlines()
-                                new_lines = []
-                                found = False
-                                for line in lines:
-                                    if line.startswith("USER_NAME="):
-                                        new_lines.append(f"USER_NAME={saved_name}")
-                                        found = True
-                                    else:
-                                        new_lines.append(line)
-                                if not found:
-                                    new_lines.append(f"USER_NAME={saved_name}")
-                                env_path.write_text(
-                                    "\n".join(new_lines) + "\n", encoding="utf-8"
-                                )
-                                log.info(f"📝 Name saved everywhere: {saved_name}")
-                        except Exception as _env_err:
-                            log.warning(f"Could not persist name to .env: {_env_err}")
-                # ── Sync ALL personal facts to ConversationDatabase ──
-                # Makes facts permanently searchable and cross-session aware.
-                try:
-                    if hasattr(self, "memory") and self.memory.conv_db:
-                        for _fact_key in [
-                            "name",
-                            "college",
-                            "city",
-                            "age",
-                            "job",
-                            "birthday",
-                            "hobby",
-                            "profession",
-                            "nickname",
-                            "note",
-                        ]:
-                            _fact_val = self._personal_mem.get(_fact_key)
-                            if _fact_val:
-                                self.memory.conv_db.save_fact(
-                                    "personal", _fact_key, _fact_val
-                                )
-                except Exception:
-                    pass
-                self._speak(learned)
                 return ""
         except Exception as _pm_err:
             log.warning(f"PersonalMemory error: {_pm_err}")
+
+        # Must check BEFORE intent parsing so corrections are never misrouted
+        if self.corrector.is_correction(text):
+            response = self.corrector.learn(text)
+            self._speak(response)
+            return ""
 
         # ── Correction stats ──────────────────────────────────
         if any(
@@ -1245,92 +1486,7 @@ class JARVIS:
             self._speak(self.corrector.get_stats())
             return ""
 
-        # ── WhatsApp: READ last messages from a person ────────
-        # "read last messages from Sarvani"
-        # "what did Sarvani say" / "last message from Banty"
-        _read_msg_triggers = [
-            "read last message",
-            "read messages from",
-            "last message from",
-            "what did",
-            "what's the last message",
-            "show messages from",
-            "read whatsapp from",
-            "check messages from",
-        ]
-        if any(p in text_lower for p in _read_msg_triggers):
-            # Extract contact name
-            contact = ""
-            # Pattern: "...from NAME"
-            import re as _re
 
-            m = _re.search(r"from\s+(\w+)", text_lower)
-            if m:
-                contact = m.group(1).strip()
-            # Pattern: "what did NAME say"
-            if not contact:
-                m = _re.search(
-                    r"(?:what did|did)\s+(\w+)\s+(?:say|send|message)", text_lower
-                )
-                if m:
-                    contact = m.group(1).strip()
-            # Pattern: "NAME's last message"
-            if not contact:
-                m = _re.search(r"(\w+)'s last message", text_lower)
-                if m:
-                    contact = m.group(1).strip()
-
-            # Skip generic words as contact
-            skip_words = {"the", "a", "any", "last", "new", "my", "read"}
-            if contact in skip_words:
-                contact = ""
-
-            if contact:
-                # How many messages? "last 5 messages" → 5
-                count = 3
-                m_count = _re.search(r"last\s+(\d+)\s+message", text_lower)
-                if m_count:
-                    count = min(int(m_count.group(1)), 8)
-
-                self._speak(f"Opening chat with {contact}, one moment sir.")
-                result = self.whatsapp.read_last_messages(contact, count)
-                self._speak(result)
-                return ""
-
-        # ── WA: SEND from natural language BEFORE type handler ─────────
-        # "write a message to Sarvani hi in WhatsApp"
-        # "send hi to Sarvani on WhatsApp"
-        # "WhatsApp Sarvani I am coming"
-        import re as _re_wa_snd
-
-        _wa_mentioned = "whatsapp" in text_lower or " wa " in text_lower
-        _wa_snd_m = None
-        if _wa_mentioned:
-            # Pattern: write/send/message + "to CONTACT MESSAGE"
-            _wa_snd_m = _re_wa_snd.search(
-                r"(?:write|send|type|compose|say|message)\s+(?:a\s+)?(?:message\s+)?to\s+(\w+)\s+(.+)",
-                text_lower.strip(),
-            )
-            # Also: "WhatsApp Sarvani good morning"
-            if not _wa_snd_m:
-                _wa_snd_m = _re_wa_snd.search(
-                    r"whatsapp\s+(\w+)\s+(.+)", text_lower.strip()
-                )
-        if _wa_snd_m:
-            _ws_contact = _wa_snd_m.group(1).strip()
-            _ws_msg = _wa_snd_m.group(2).strip()
-            # Strip trailing "in/on whatsapp" from message
-            _ws_msg = _re_wa_snd.sub(
-                r"\s*(?:in|on)\s+whatsapp\s*$", "", _ws_msg
-            ).strip()
-            _bad_wa = {"a", "the", "my", "this", "some", "any", "that"}
-            if _ws_contact not in _bad_wa and _ws_msg:
-                self._speak(f"Sending to {_ws_contact} on WhatsApp, sir.")
-                result = self.whatsapp.send_message(
-                    _ws_contact, _ws_msg, stop_event=self._stop_event
-                )
-                self._speak(result)
-                return ""
 
         # ── TYPE command — works in ANY active window ──────────
         # "type hello" → types in WhatsApp if open, else types globally
@@ -1398,33 +1554,6 @@ class JARVIS:
                 self._speak(result)
             return ""
 
-        # ── WhatsApp: SEND what was typed ─────────────────────
-        # "send" / "enter" / "send it" / "press enter"
-        _send_words = {
-            "send",
-            "enter",
-            "send it",
-            "send message",
-            "press enter",
-            "send now",
-            "ok send",
-            "go ahead send",
-        }
-        if text_lower.strip() in _send_words or text_lower in _send_words:
-            # GUARD: only fire when WhatsApp is the active window
-            _active_for_send = ""
-            try:
-                import pygetwindow as _gw_s
-
-                _aw_s = _gw_s.getActiveWindow()
-                _active_for_send = (_aw_s.title or "").lower() if _aw_s else ""
-            except Exception:
-                pass
-            if "whatsapp" in _active_for_send:
-                result = self.whatsapp.send_typed_message()
-                self._speak(result)
-                return ""
-
         # ── BACKSPACE — works in ANY active window ────────────
         import re as _re2
 
@@ -1455,23 +1584,6 @@ class JARVIS:
                 for _ in range(_n):
                     pyautogui.press("backspace")
                 result = f"Deleted {_n} character{'s' if _n > 1 else ''}, sir."
-            self._speak(result)
-            return ""
-
-        # ── WhatsApp: DELETE LAST WORD ────────────────────────
-        # "delete last word" / "remove last word" / "delete word"
-        if any(
-            p in text_lower
-            for p in [
-                "delete last word",
-                "remove last word",
-                "delete word",
-                "remove word",
-                "undo word",
-                "ctrl backspace",
-            ]
-        ):
-            result = self.whatsapp.delete_last_word()
             self._speak(result)
             return ""
 
@@ -1509,177 +1621,11 @@ class JARVIS:
             self._speak(result)
             return ""
 
-        # ── WA: Notification Listener ──────────────────────────
-        if any(
-            p in text_lower
-            for p in [
-                "start whatsapp notification",
-                "watch for whatsapp",
-                "watch whatsapp messages",
-                "listen for whatsapp",
-            ]
-        ):
 
-            def _wa_notify_cb(contact, msg):
-                self._speak(f"New WhatsApp from {contact}: {msg}")
-
-            result = self.whatsapp.start_notification_listener(_wa_notify_cb)
-            self._speak(result)
-            return ""
-
-        if any(
-            p in text_lower
-            for p in ["stop whatsapp notification", "stop watching whatsapp"]
-        ):
-            self._speak(self.whatsapp.stop_notification_listener())
-            return ""
-
-        # ── WA: Unread count (badge OCR) ──────────────────────
-        if any(
-            p in text_lower
-            for p in [
-                "how many unread",
-                "unread count",
-                "count unread",
-                "check whatsapp unread",
-                "how many whatsapp messages",
-            ]
-        ):
-            self._speak("Checking unread count, sir.")
-            self._speak(self.whatsapp.get_unread_count())
-            return ""
-
-        # ── WA: Open someone's chat ────────────────────────────
-        # "open Sarvani chat" / "open chat with Teja" / "go to Sarvani WhatsApp"
-        # "show Teja chat" / "open Sarvani's WhatsApp"
-        _oc_match = None
-        if any(w in text_lower for w in ["whatsapp", "chat", "message"]):
-            import re as _re_oc
-
-            _oc_match = _re_oc.search(
-                r"(?:open|go to|show|switch to|take me to)\s+"
-                r"(?:chat\s+with\s+|whatsapp\s+(?:chat\s+)?(?:of\s+|with\s+)?)?([a-zA-Z ]+?)"
-                r"(?:'s)?\s*(?:chat|whatsapp|message|conversation)?$",
-                text_lower.strip(),
-            )
-            # Also catch: "open Sarvani's chat" / "Sarvani chat open"
-            if not _oc_match:
-                _oc_match = _re_oc.search(
-                    r"([a-zA-Z ]+?)'?s?\s+(?:chat|whatsapp)\s*(?:open|show|go)?",
-                    text_lower.strip(),
-                )
-        if _oc_match:
-            _oc_name = _oc_match.group(1).strip()
-            # Filter out generic words that aren't contact names
-            _bad_oc = {
-                "the",
-                "a",
-                "my",
-                "his",
-                "her",
-                "their",
-                "this",
-                "that",
-                "open",
-                "show",
-                "whatsapp",
-                "chat",
-            }
-            if _oc_name and _oc_name not in _bad_oc and len(_oc_name) > 1:
-                self._speak(f"Opening {_oc_name}'s chat, sir.")
-                result = self.whatsapp._open_chat(_oc_name)
-                self._speak("Chat opened, sir." if result else "Failed to open chat.")
-                return ""
-
-        if any(
-            p in text_lower
-            for p in [
-                "read all unread",
-                "scan all unread",
-                "what are my unread",
-                "show all unread",
-                "read unread whatsapp",
-            ]
-        ):
-            self._speak("Scanning all unread WhatsApp chats, sir. Give me a moment.")
-            self._speak(self.whatsapp.scan_all_unread_chats())
-            return ""
-
-        # ── WA: Mark all as read ──────────────────────────────
-        if any(
-            p in text_lower
-            for p in [
-                "mark all as read",
-                "mark all whatsapp",
-                "clear all unread",
-                "mark read",
-            ]
-        ):
-            self._speak(self.whatsapp.mark_all_as_read())
-            return ""
-
-        # ── WA: Voice note ────────────────────────────────────
-        import re as _re3
-
-        _vn = _re3.match(
-            r"send\s+(?:(\d+)\s+second\s+)?voice\s+note\s+to\s+(.+)", text_lower.strip()
-        )
-        if _vn:
-            _vn_dur = int(_vn.group(1)) if _vn.group(1) else 5
-            _vn_who = _vn.group(2).strip()
-            self._speak(f"Recording {_vn_dur} second voice note, sir. Speak now.")
-            self._speak(self.whatsapp.send_voice_note(_vn_who, _vn_dur))
-            return ""
-
-        # ── Voice Change ────────────────────────────────────────
-        # Detect: "change voice to Bella" / "switch to George" / "use Bella voice"
-        # Strategy: must have 'voice' keyword OR explicit change verb + a known voice name
-        _VOICE_NAMES = [
-            "george",
-            "bella",
-            "adam",
-            "lewis",
-            "michael",
-            "nicole",
-            "sarah",
-            "sky",
-            "emma",
-            "isabella",
-        ]
-        _VOICE_VERBS = [
-            "change voice",
-            "switch voice",
-            "use voice",
-            "set voice",
-            "voice to",
-            "change to",
-            "switch to",
-        ]
-
-        _has_voice_name = any(v in text_lower for v in _VOICE_NAMES)
-        _has_voice_verb = (
-            "voice" in text_lower
-            and any(
-                v in text_lower
-                for v in ["change", "switch", "use", "set", "make", "want"]
-            )
-        ) or any(v in text_lower for v in _VOICE_VERBS)
-
-        if _has_voice_name and _has_voice_verb:
-            voice_name = self.speaker.find_voice_in_text(text)
-            if voice_name:
-                self._speak(f"Switching to {voice_name}, one moment...")
-                result = self.speaker.set_voice(voice_name)
-                self._speak(result)
-                return ""
-
-        # ── Notification Watcher Controls ────────────────────────
         # "do not disturb" / "stop notifications" / "resume notifications"
         # "mute whatsapp" / "unmute whatsapp" / "notification status"
         # "what notifications did I get"
         if self.notif_watcher:
-            import re as _re_dnd   # available to all sub-blocks below
-
             # Do Not Disturb
             if any(p in text_lower for p in [
                 "do not disturb", "don't disturb",
@@ -1687,7 +1633,7 @@ class JARVIS:
                 "silence notifications", "quiet mode",
             ]):
                 # Extract duration if mentioned
-                _dnd_match = _re_dnd.search(r"(\d+)\s*(?:min|minute|hour)", text_lower)
+                _dnd_match = re.search(r"(\d+)\s*(?:min|minute|hour)", text_lower)
                 if _dnd_match:
                     mins = int(_dnd_match.group(1))
                     if "hour" in text_lower:
@@ -1710,7 +1656,7 @@ class JARVIS:
             if "notification" in text_lower and any(
                 p in text_lower for p in ["mute ", "silence "]
             ):
-                _mute_match = _re_dnd.search(
+                _mute_match = re.search(
                     r"(?:mute|silence)\s+(.+?)\s*(?:notification|$)",
                     text_lower,
                 )
@@ -1721,7 +1667,7 @@ class JARVIS:
 
             # Unmute specific app (only if "notification" is mentioned)
             if "notification" in text_lower and "unmute " in text_lower:
-                _unmute_match = _re_dnd.search(
+                _unmute_match = re.search(
                     r"unmute\s+(.+?)\s*(?:notification|$)",
                     text_lower,
                 )
@@ -2722,6 +2668,36 @@ class JARVIS:
             self._speak(f"Setting {freq} reminder, sir.")
             self._speak(self.reminder.set_recurring_reminder(msg, freq, at_time))
             return ""
+        # ── Reminder: Edit ──────────────────────────────────────────
+        edit_match = None
+        for pattern in [
+            r"edit reminder (\S+)",
+            r"change reminder (\S+) to (.+)"
+        ]:
+            m = re.search(pattern, text_lower)
+            if m:
+                edit_match = m
+                break
+        
+        if edit_match:
+            rid = edit_match.group(1).upper()
+            new_time = None
+            new_freq = None
+            if len(edit_match.groups()) > 1:
+                val = edit_match.group(2).strip()
+                # quick parsing "every monday 9 am" or "10 pm"
+                if "every" in val:
+                    new_freq = val.replace("every", "").strip()
+                    if " at " in new_freq:
+                        parts = new_freq.split(" at ")
+                        new_freq = parts[0].strip()
+                        new_time = parts[1].strip()
+                else:
+                    new_time = val
+            
+            self._speak(self.reminder.edit_reminder(rid, new_time, new_freq))
+            return ""
+
         # ── Reminder: List upcoming reminders ─────────────────────
         if any(
             t in text_lower
@@ -2919,46 +2895,45 @@ class JARVIS:
         )
 
         # ── Memory commands ───────────────────────────────────
-        if mem:
-            if any(
-                p in text_lower
-                for p in [
-                    "what do you remember",
-                    "what do you know about me",
-                    "what have you remembered",
-                    "recall",
-                ]
-            ):
+        if any(
+            p in text_lower
+            for p in [
+                "what do you remember",
+                "what do you know about me",
+                "what have you remembered",
+                "recall",
+            ]
+        ):
+            # PersonalMemory is PRIMARY — always check it first
+            if self._personal_mem:
+                pm_all = self._personal_mem.get_all()
+                if pm_all:
+                    self._speak(self._personal_mem._recall_all())
+                    return ""
+            # Fallback: LLM context memory
+            if mem:
                 facts = mem.get_facts_prompt()
                 if facts:
                     response = facts.replace(
                         "Things I know about the user:\n- ", ""
                     ).replace("\n- ", ", ")
                     self._speak(f"I remember: {response}")
-                else:
-                    self._speak("I don't know much about you yet. Tell me something!")
-                return ""
+                    return ""
+            self._speak(
+                "I don't have any personal facts stored yet, sir. "
+                "Tell me things like 'my name is X' or 'I study at NIT Delhi'."
+            )
+            return ""
 
-            if any(
-                p in text_lower
-                for p in [
-                    "forget everything",
-                    "clear memory",
-                    "forget all",
-                    "reset memory",
-                ]
-            ):
-                mem.forget()
-                mem.clear_session()
-                self._speak("Done. I've forgotten everything.")
-                return ""
+        # NOTE: "delete my info" / "forget everything" / "clear memory"
+        # is handled by PersonalMemory.try_recall(__clear__) at priority zero.
 
-            if text_lower.startswith("remember that ") or text_lower.startswith(
-                "remember "
-            ):
-                mem.add_user_message(text)
-                self._speak("Got it, I'll remember that.")
-                return ""
+        if mem and (text_lower.startswith("remember that ") or text_lower.startswith(
+            "remember "
+        )):
+            mem.add_user_message(text)
+            self._speak("Got it, I'll remember that.")
+            return ""
 
         # ── AI Conversation Stats ─────────────────────────────
         if any(
@@ -3048,724 +3023,42 @@ class JARVIS:
                 )
             return ""
 
-        # Screenshot + send to WhatsApp compound command
-        _ss_wa_m = _re_cond.search(
-            r"(?:take|capture)\s+(?:a\s+)?screenshot\s+and\s+(?:send|share)\s+(?:it\s+)?(?:to|with)\s+(\w+)",
-            text_lower,
-        )
-        if _ss_wa_m:
-            _sc_contact = _ss_wa_m.group(1).strip()
-            self._speak(
-                f"Taking screenshot and sending to {_sc_contact} on WhatsApp, sir."
-            )
-            import os
-            import tempfile
-
-            import pyautogui as _pag
-
-            _sc_path = os.path.join(tempfile.gettempdir(), "jarvis_sc_wa.png")
-
-            _pag.screenshot().save(_sc_path)
-            import time as _time
-
-            _time.sleep(0.5)
-            response = self.whatsapp.send_screenshot(_sc_contact)
-            self._speak(response)
-            return ""
-
-        # ── Task chain detection ──────────────────────────────
-        if self.chain.is_chain(text):
-            self._speak("On it.")
-            return self.chain.execute_chain(text)
-
-        # ── Name: get / set ───────────────────────────────────
-        # "What's my name" / "What is my name" / "Do you know my name"
-        _name_ask = [
-            "what's my name",
-            "what is my name",
-            "do you know my name",
-            "who am i",
-            "what do you call me",
-            "what's your user's name",
-        ]
-        if any(t in text_lower for t in _name_ask):
-            name = config.USER_NAME or "Boss"
-            self._speak(f"Your name is {name}, sir.")
-            return ""
-
-        # "My name is Srinivas" / "Call me Srini" / "Remember my name is X"
-        _name_set_patterns = [
-            "my name is ",
-            "call me ",
-            "remember my name is ",
-            "remember that my name is ",
-            "i am ",
-            "my name's ",
-        ]
-        for pat in _name_set_patterns:
-            if text_lower.startswith(pat):
-                new_name = (
-                    text[len(pat) :].strip().rstrip(".,!").split()[0].capitalize()
-                )
-                if new_name and len(new_name) > 1:
-                    # Update config at runtime
-                    config.USER_NAME = new_name
-                    # Persist to .env file
-                    try:
-                        from pathlib import Path as _Path
-
-                        env_path = _Path(__file__).parent / ".env"
-                        if env_path.exists():
-                            lines = env_path.read_text(encoding="utf-8").splitlines()
-                            found = False
-                            new_lines = []
-                            for line in lines:
-                                if line.startswith("USER_NAME="):
-                                    new_lines.append(f"USER_NAME={new_name}")
-                                    found = True
-                                else:
-                                    new_lines.append(line)
-                            if not found:
-                                new_lines.append(f"USER_NAME={new_name}")
-                            env_path.write_text(
-                                "\n".join(new_lines) + "\n", encoding="utf-8"
-                            )
-                    except Exception as _e:
-                        log.warning(f"Could not persist name: {_e}")
-                    self._speak(f"Got it! I'll call you {new_name} from now on, sir.")
-                    return ""
-                break
-
-        # ── Camera Vision — Gemini AI (no disk writes, no local model) ──────
-        # ALL camera commands now use vision_handler + Gemini Vision API
-
-        # What am I holding / what's in my hand / identify this
-        _cam_identify = [
-            "what is in my hand",
-            "what's in my hand",
-            "whats in my hand",
-            "what am i holding",
-            "what do i have",
-            "what is this",
-            "what's this",
-            "whats this",
-            "what is that",
-            "what's that",
-            "whats that",
-            "identify this",
-            "identify this object",
-            "tell me what this is",
-            "what object is this",
-            "scan this",
-            "look at this",
-            "can you identify",
-            "recognize this",
-            "analyze this",
-            "what am i showing",
-            "what do i hold",
-            "see this",
-            "check this out",
-            "what do you think this is",
-        ]
-        if any(t in text_lower for t in _cam_identify):
-            if "screen" in text_lower or "monitor" in text_lower:
-                self._speak("Looking at your screen...")
-                response = self.vision.what_is_on_screen()
-            else:
-                self._speak("Looking through the camera...")
-                response = self.vision.identify_objects()
-            self._speak(response)
-            return ""
-
-        # Look at camera / describe scene / what do you see
-        _cam_look = [
-            "look at the camera",
-            "look through the camera",
-            "what can you see",
-            "what's in front",
-            "what is in front",
-            "describe the room",
-            "describe the scene",
-            "look around",
-            "what am i holding",
-            "what do you see",
-            "use your camera",
-            "open your camera",
-            "whats in front",
-            "whats in my hand",
-        ]
-        if any(t in text_lower for t in _cam_look):
-            self._speak("Looking...")
-            response = self.vision.look_at_camera()
-            self._speak(response)
-            return ""
-
-        # Who am I / can you see me
-        _cam_person = [
-            "who am i",
-            "can you see me",
-            "do you see me",
-            "describe me",
-            "what do i look like",
-            "can you see my face",
-        ]
-        if any(t in text_lower for t in _cam_person):
-            self._speak("Looking at you...")
-            response = self.vision.identify_person()
-            self._speak(response)
-            return ""
-
-        # Read text from camera (book, paper, board, sign)
-        _cam_read = [
-            "read this",
-            "read that",
-            "what does this say",
-            "what does that say",
-            "read the text",
-            "what is written",
-            "what does it say",
-            "read this for me",
-            "scan the text",
-            "read the label",
-            "what's written",
-            "tell me what it says",
-            "read this book",
-            "read this sign",
-            "read this page",
-            "read the board",
-            "read the whiteboard",
-        ]
-        if any(t in text_lower for t in _cam_read):
-            self._speak("Reading...")
-            response = self.vision.read_text_from_camera()
-            self._speak(response)
-            return ""
-
-        # ── Direct Math Handler ──────────────────────
-        # Catches: "2+2", "16 X 16", "16 into 16", "what is 5 times 3"
-        # FIX: strip prefixes and "equals to"; add 'into', 'x', 'X' as multiply
-        import re as _re_math
-
-        _math_text = text_lower.strip()
-        for _pfx in [
-            "jarvis ",
-            "what is ",
-            "what's ",
-            "calculate ",
-            "solve ",
-            "compute ",
-            "tell me ",
-        ]:
-            if _math_text.startswith(_pfx):
-                _math_text = _math_text[len(_pfx) :].strip()
-        # FIX: strip trailing noise like "equals to", "equal", "="
-        _math_text = _re_math.sub(
-            r"\s*(equals to|equals|equal|=)\s*$", "", _math_text
-        ).strip()
-        _math_text = (
-            _math_text.replace("plus", "+")
-            .replace("minus", "-")
-            .replace("times", "*")
-            .replace("multiplied by", "*")
-            .replace("divided by", "/")
-            .replace("over", "/")
-            .replace(" into ", "*")  # FIX: "16 into 16" = 16*16 in Indian math
-        )
-        # FIX: replace standalone X/x as multiply (e.g. "16 X 16", "16 x 16")
-        _math_text = _re_math.sub(r"(?<=\d)\s+[xX]\s+(?=\d)", "*", _math_text)
-        _math_m = _re_math.search(
-            r"^(-?\d+(?:\.\d+)?)\s*([+\-*/])\s*(-?\d+(?:\.\d+)?)$", _math_text.strip()
-        )
-        if _math_m:
-            try:
-                _ma = float(_math_m.group(1))
-                _mop = _math_m.group(2)
-                _mb = float(_math_m.group(3))
-                _mres = {
-                    "+": _ma + _mb,
-                    "-": _ma - _mb,
-                    "*": _ma * _mb,
-                    "/": (_ma / _mb if _mb != 0 else None),
-                }[_mop]
-                if _mres is None:
-                    _math_reply = "Can't divide by zero, sir!"
-                elif _mres == int(_mres):
-                    _math_reply = f"That's {int(_mres)}, sir."
-                else:
-                    _math_reply = f"That's {_mres:.4f}, sir."
-                self._speak(_math_reply)
-                return ""  # FIX: return '' so the calling loop doesn't speak again
-            except Exception:
-                pass
-
-        # ── Screen control (click, scroll, type, snap) ────────
-        screen_words = [
-            "click",
-            "scroll",
-            "type ",
-            "press ",
-            "select all",
-            "copy this",
-            "copy that",
-            "paste",
-            "undo",
-            "redo",
-            "save this",
-            "save it",
-            "snap left",
-            "snap right",
-            "move left",
-            "move right",
-            "minimize",
-            "minimise",
-            "maximize",
-            "maximise",
-            "switch window",
-            "alt tab",
-            "task view",
-            "full screen",
-            "show all windows",
-            "next window",
-        ]
-        if any(w in text_lower for w in screen_words):
-            result = self.screen.execute(text)
-            if result:
-                self._speak(result)
-                return ""  # Already spoken
-
-        # ── Clipboard ─────────────────────────────────────────────────
-        if (
-            "read clipboard" in text_lower
-            or "what's in clipboard" in text_lower
-            or "what did i copy" in text_lower
-        ):
-            response = self.clipboard.read_clipboard()
-            self._speak(response)
-            return ""
-
-        if (
-            "summarize clipboard" in text_lower
-            or "summarize what i copied" in text_lower
-        ):
-            response = self.clipboard.summarize_clipboard(self.gemini)
-            self._speak(response)
-            return ""
-
-        # ── Calendar ───────────────────────────────────────────────
-        add_event_triggers = [
-            "add event",
-            "add a ",
-            "schedule a",
-            "schedule an",
-            "create event",
-            "put a ",
-            "book a",
-            "set up a",
-            "remind me to",
-            "add to calendar",
-        ]
-        if any(t in text_lower for t in add_event_triggers):
-            response = self.calendar.add_event(text)
-            self._speak(response)
-            return ""
-
-        if any(
-            t in text_lower
-            for t in [
-                "what's my schedule",
-                "my schedule",
-                "what do i have",
-                "what's happening",
-            ]
-        ):
-            if "tomorrow" in text_lower:
-                self._speak(self.calendar.get_tomorrow())
-            elif "week" in text_lower:
-                self._speak(self.calendar.get_this_week())
-            elif any(
-                d in text_lower
-                for d in [
-                    "monday",
-                    "tuesday",
-                    "wednesday",
-                    "thursday",
-                    "friday",
-                    "saturday",
-                    "sunday",
-                ]
-            ):
-                self._speak(self.calendar.get_schedule_for_day(text))
-            else:
-                self._speak(self.calendar.get_today())
-            return ""
-
-        if any(
-            t in text_lower
-            for t in [
-                "today's schedule",
-                "schedule for today",
-                "what's today",
-                "do i have anything today",
-            ]
-        ):
-            self._speak(self.calendar.get_today())
-            return ""
-
-        if any(
-            t in text_lower
-            for t in [
-                "tomorrow's schedule",
-                "schedule for tomorrow",
-                "do i have anything tomorrow",
-            ]
-        ):
-            self._speak(self.calendar.get_tomorrow())
-            return ""
-
-        if "next event" in text_lower or "upcoming event" in text_lower:
-            self._speak(self.calendar.get_next_event())
-            return ""
-
-        if any(
-            t in text_lower
-            for t in [
-                "show all events",
-                "list events",
-                "all my events",
-                "show calendar",
-            ]
-        ):
-            self._speak(self.calendar.list_all_events())
-            return ""
-
-        if any(
-            t in text_lower
-            for t in ["cancel event", "delete event", "remove event", "cancel my"]
-        ):
-            response = self.calendar.cancel_event(text)
-            self._speak(response)
-            return ""
-
-        # ── Direct Math Handler ──────────────────────────────
-        # Handle BEFORE factual triggers so "what is 2+2" never hits Wikipedia
-        # Catches: "2+2", "what is 2+2", "2 + 2 =", "5 times 3"
-        import re as _re_math
-
-        _math_text = text_lower.strip()
-        # Strip common prefixes like "what is", "calculate", "jarvis"
-        for _pfx in [
-            "jarvis ",
-            "what is ",
-            "what's ",
-            "calculate ",
-            "solve ",
-            "compute ",
-        ]:
-            if _math_text.startswith(_pfx):
-                _math_text = _math_text[len(_pfx) :].strip()
-        _math_text = (
-            _math_text.rstrip("=? ")
-            .replace("plus", "+")
-            .replace("minus", "-")
-            .replace("times", "*")
-            .replace("multiplied by", "*")
-            .replace("divided by", "/")
-            .replace("over", "/")
-        )
-        _math_m = _re_math.search(
-            r"^(-?\d+(?:\.\d+)?)\s*([+\-*/])\s*(-?\d+(?:\.\d+)?)$", _math_text.strip()
-        )
-        if _math_m:
-            try:
-                _ma = float(_math_m.group(1))
-                _mop = _math_m.group(2)
-                _mb = float(_math_m.group(3))
-                _mres = {
-                    "+": _ma + _mb,
-                    "-": _ma - _mb,
-                    "*": _ma * _mb,
-                    "/": (_ma / _mb if _mb != 0 else None),
-                }[_mop]
-                if _mres is None:
-                    _math_reply = "Can't divide by zero, sir!"
-                elif _mres == int(_mres):
-                    _math_reply = f"That's {int(_mres)}, sir."
-                else:
-                    _math_reply = f"That's {_mres:.4f}, sir."
-                self._speak(_math_reply)
-                return ""
-            except Exception:
-                pass
-
-        # ── Crypto Price (CoinGecko — free, no API key) ────────────────────
-        _crypto_map = {
-            "bitcoin": "bitcoin",
-            "btc": "bitcoin",
-            "ethereum": "ethereum",
-            "eth": "ethereum",
-            "dogecoin": "dogecoin",
-            "doge": "dogecoin",
-            "solana": "solana",
-            "sol": "solana",
-            "ripple": "ripple",
-            "xrp": "ripple",
-            "litecoin": "litecoin",
-            "ltc": "litecoin",
-            "cardano": "cardano",
-            "ada": "cardano",
-            "bnb": "binancecoin",
-            "binance": "binancecoin",
-        }
-        _crypto_id = None
-        for _kw, _cid in _crypto_map.items():
-            if _kw in text_lower:
-                _crypto_id = _cid
-                break
-        _wants_price = any(
-            w in text_lower
-            for w in ["price", "worth", "cost", "value", "rate", "how much"]
-        )
-        if _crypto_id and (_wants_price or "crypto" in text_lower):
-            try:
-                import requests as _req
-
-                _inr = (
-                    "inr" in text_lower
-                    or "rupee" in text_lower
-                    or "rupees" in text_lower
-                )
-                _currency = "inr" if _inr else "usd"
-                _symbol = _currency.upper()
-                _r = _req.get(
-                    f"https://api.coingecko.com/api/v3/simple/price"
-                    f"?ids={_crypto_id}&vs_currencies={_currency}",
-                    timeout=6,
-                )
-                if _r.status_code == 200:
-                    _price = _r.json().get(_crypto_id, {}).get(_currency, 0)
-                    _name = _crypto_id.title()
-                    if _inr:
-                        _price_fmt = f"₹{_price:,.2f}"
-                    else:
-                        _price_fmt = f"${_price:,.2f}"
-                    response = f"{_name} is currently at {_price_fmt} {_symbol}, sir."
-                    self._speak(response)
-                    return ""
-                else:
-                    response = f"Couldn't fetch {_crypto_id} price right now, sir. CoinGecko returned {_r.status_code}."
-                    self._speak(response)
-                    return ""
-            except Exception as _ce:
-                response = f"Crypto price check failed: {str(_ce)[:60]}"
-                self._speak(response)
-                return ""
-
-        # ── Real-time Web Search + Factual Questions ────────────────────────
-        live_search_triggers = [
-            "latest news",
-            "current news",
-            "news about",
-            "news on",
-            "price of",
-            "current price",
-            "bitcoin",
-            "btc",
-            "ethereum",
-            "crypto price",
-            "stock price",
-            "time in ",
-            "what time is it in",
-            "live score",
-            "current score",
-            "today's",
-            "right now",
-            "currently",
-        ]
-        factual_triggers_startswith = [
-            "who is ",
-            "who was ",
-            "who are ",
-            "who were ",
-            "what is ",
-            "what are ",
-            "what was ",
-            "what were ",
-            "how does ",
-            "how did ",
-            "how do ",
-            "why is ",
-            "why was ",
-            "why are ",
-            "why did ",
-            "when did ",
-            "when was ",
-            "when is ",
-            "where is ",
-            "where was ",
-            "where are ",
-            "tell me about ",
-            "tell about ",
-            "explain ",
-            "define ",
-            "describe ",
-            "how to ",
-            "how do i ",
-            "what causes ",
-            "do you know about ",
-            "what do you know about ",
-            "can you tell me about ",
-            "can you explain ",
-            "give me information about ",
-            "give me info about ",
-            "what happened to ",
-            "what happened with ",
-            "who invented ",
-            "who created ",
-            "who founded ",
-            "what is the history of ",
-        ]
-        factual_triggers_contains = [
-            "elon musk",
-            "bill gates",
-            "steve jobs",
-            "mark zuckerberg",
-            "narendra modi",
-            "donald trump",
-            "joe biden",
-            "who is he",
-            "who is she",
-            "who are they",
-            "what does he do",
-            "what does she do",
-        ]
-        is_live = any(t in text_lower for t in live_search_triggers)
-        is_factual = any(
-            text_lower.startswith(t) for t in factual_triggers_startswith
-        ) or any(t in text_lower for t in factual_triggers_contains)
-        # FIX: Don't route math questions to Wikipedia
-        # Catches: "what is 16 X 16", "what is 16 into 16", "16+2", etc.
-        _looks_math = bool(
-            _re_math.search(
-                r"\d.*[+\-*/xX]|[+\-*/].*\d|\d+\s+into\s+\d|\d+\s+[xX]\s+\d", text_lower
-            )
-        )
-        if _looks_math:
-            is_factual = False
-
-        # FIX: Conversational/opinion/casual markers → always Gemini, never Wikipedia
-        # "explain X like I'm 15", "using an analogy", "in simple terms",
-        # "what do you think", "your opinion", "roast me", etc.
-        _conversational_markers = [
-            "like i'm ",
-            "like i am ",
-            "like a 5",
-            "like a 10",
-            "like a 15",
-            "like i was ",
-            "as if i",
-            "for dummies",
-            "in simple terms",
-            "simply explain",
-            "easy explanation",
-            "in layman",
-            "using an analogy",
-            "give me an analogy",
-            "real world analogy",
-            "what do you think",
-            "your opinion",
-            "your take",
-            "do you think",
-            "should i ",
-            "would you ",
-            "what would you",
-            "i feel like",
-            "i feel ",
-            "i'm feeling",
-            "i am feeling",
-            "i'm stressed",
-            "i'm bored",
-            "i'm confused",
-            "i'm stuck",
-            "help me understand",
-            "can you help me",
-            "roast me",
-            "tell me a joke",
-            "make me laugh",
-            "what's your favorite",
-            "do you have a favorite",
-            "are you conscious",
-            "do you have feelings",
-            "are you alive",
-            "are you smarter",
-            "better than chatgpt",
-            "better than siri",
-            "meaning of life",
-            "meaning of",
-            "purpose of life",
-            "what would happen if",
-            "what if ",
-            "hypothetically",
-            "genuinely surprising",
-            "tell me something surprising",
-            "fun fact",
-            "did you know",
-            "interesting fact",
-        ]
-        _is_conversational = any(m in text_lower for m in _conversational_markers)
-        if _is_conversational:
-            is_factual = False
-            is_live = False
-
-        if is_live or is_factual:
-            self._speak("Let me look that up...")
-            response = self.web_search.search(text)
-            self._speak(response)
-            return ""
-
-        # "search news about cricket" / "latest news"
-        if "search news" in text_lower or "latest news" in text_lower:
-            topic = (
-                text_lower.replace("search news", "")
-                .replace("latest news", "")
-                .replace("about", "")
-                .strip()
-            )
-            self._speak("Fetching news...")
-            response = self.web_search.search_news(topic)
-            self._speak(response)
-            return ""
-
-        # ── System info ───────────────────────────────────────
-        if any(
-            w in text_lower
-            for w in [
-                "cpu usage",
-                "ram usage",
-                "how much ram",
-                "how much storage",
-                "disk space",
-                "system info",
-                "system status",
-                "what's eating",
-                "what is using",
-            ]
-        ):
-            import psutil
-
-            cpu = psutil.cpu_percent(interval=0.5)
-            ram = psutil.virtual_memory()
-            disk = psutil.disk_usage("C:\\")
-            response = (
-                f"CPU at {cpu:.0f} percent, "
-                f"RAM {ram.percent:.0f} percent used, "
-                f"{ram.available / (1024**3):.1f} gigs free, "
-                f"disk {100 - disk.percent:.0f} percent free."
-            )
-            self._speak(response)
-            return ""  # Already spoken
-
         # ── Problem Solver (LeetCode / DSA / Debug) ────────────
         if self.problem_solver:
+            # Try to extract language first
+            language = None
+            lang_match = re.search(
+                r"\b(?:in|on|using|with|to)\s+(c\s*\+\+|cpp|c\s+plus\s+plus|cplusplus|python|java|javascript|js|go|golang|rust|c\s*#|csharp|c\s+sharp|typescript|ts|c)(?![a-zA-Z0-9_+#])",
+                text_lower
+            )
+            if not lang_match:
+                lang_match = re.search(
+                    r"\b(c\s*\+\+|cpp|c\s+plus\s+plus|cplusplus|python|java|javascript|js|go|golang|rust|c\s*#|csharp|c\s+sharp|typescript|ts|c)(?![a-zA-Z0-9_+#])$",
+                    text_lower
+                )
+            if lang_match:
+                raw_lang = lang_match.group(1).strip()
+                if raw_lang in ["c++", "cpp", "c plus plus", "cplusplus"]:
+                    language = "C++"
+                elif raw_lang in ["c#", "csharp", "c sharp"]:
+                    language = "C#"
+                elif raw_lang in ["python", "py"]:
+                    language = "Python"
+                elif raw_lang in ["java"]:
+                    language = "Java"
+                elif raw_lang in ["javascript", "js"]:
+                    language = "JavaScript"
+                elif raw_lang in ["typescript", "ts"]:
+                    language = "TypeScript"
+                elif raw_lang in ["go", "golang"]:
+                    language = "Go"
+                elif raw_lang in ["rust"]:
+                    language = "Rust"
+                elif raw_lang in ["c"]:
+                    language = "C"
+                else:
+                    language = raw_lang.title()
+
             # "solve this" / "solve this problem" / "solve leetcode"
             _solve_screen_triggers = [
                 "solve this",
@@ -3777,8 +3070,13 @@ class JARVIS:
                 "solve this code",
             ]
             if any(t in text_lower for t in _solve_screen_triggers):
-                self._speak("Reading the problem from your screen...")
-                response = self.problem_solver.solve_from_screen()
+                lang_msg = f" in {language}" if language else ""
+                self._speak(f"Reading the problem from your screen{lang_msg}...")
+                try:
+                    response = self.problem_solver.solve_from_screen(language=language)
+                except Exception as e:
+                    log.exception(f"Skill error: {e}")
+                    response = "I encountered an error trying to do that."
                 self._speak(response)
                 return ""
 
@@ -3789,10 +3087,23 @@ class JARVIS:
             )
             if _solve_name_match:
                 problem_name = _solve_name_match.group(1).strip()
+                # Clean up language from problem name if matched
+                if lang_match:
+                    problem_name = problem_name.replace(lang_match.group(0), "").strip()
+                if problem_name.lower().endswith(" problem"):
+                    problem_name = problem_name[:-8].strip()
+                elif problem_name.lower().endswith(" question"):
+                    problem_name = problem_name[:-9].strip()
+
                 # Skip if it matched a screen trigger
-                if problem_name not in ["this", "the problem", "leetcode", "the question", "this code"]:
-                    self._speak(f"Solving {problem_name}...")
-                    response = self.problem_solver.solve_by_name(problem_name)
+                if problem_name not in ["this", "the problem", "leetcode", "the question", "this code", "screen", "on screen", "on my screen"]:
+                    lang_msg = f" in {language}" if language else ""
+                    self._speak(f"Solving {problem_name}{lang_msg}...")
+                    try:
+                        response = self.problem_solver.solve_by_name(problem_name, language=language)
+                    except Exception as e:
+                        log.exception(f"Skill error: {e}")
+                        response = "I encountered an error trying to do that."
                     self._speak(response)
                     return ""
 
@@ -3809,7 +3120,11 @@ class JARVIS:
             ]
             if any(t in text_lower for t in _debug_triggers):
                 self._speak("Analyzing your code for bugs...")
-                response = self.problem_solver.debug_from_screen()
+                try:
+                    response = self.problem_solver.debug_from_screen()
+                except Exception as e:
+                    log.exception(f"Skill error: {e}")
+                    response = "I encountered an error trying to do that."
                 self._speak(response)
                 return ""
 
@@ -3823,7 +3138,11 @@ class JARVIS:
             ]
             if any(t in text_lower for t in _optimize_triggers):
                 self._speak("Looking for optimizations...")
-                response = self.problem_solver.optimize_from_screen()
+                try:
+                    response = self.problem_solver.optimize_from_screen()
+                except Exception as e:
+                    log.exception(f"Skill error: {e}")
+                    response = "I encountered an error trying to do that."
                 self._speak(response)
                 return ""
 
@@ -3836,7 +3155,11 @@ class JARVIS:
                 "walk me through",
             ]
             if any(t in text_lower for t in _explain_triggers):
-                response = self.problem_solver.explain_last()
+                try:
+                    response = self.problem_solver.explain_last()
+                except Exception as e:
+                    log.exception(f"Skill error: {e}")
+                    response = "I encountered an error trying to do that."
                 self._speak(response)
                 return ""
 
@@ -3849,7 +3172,11 @@ class JARVIS:
                 "put it in",
             ]
             if any(t in text_lower for t in _paste_triggers):
-                response = self.problem_solver.paste_solution()
+                try:
+                    response = self.problem_solver.paste_solution()
+                except Exception as e:
+                    log.exception(f"Skill error: {e}")
+                    response = "I encountered an error trying to do that."
                 self._speak(response)
                 return ""
 
@@ -3857,7 +3184,11 @@ class JARVIS:
             if "complexity" in text_lower and any(
                 w in text_lower for w in ["time", "space", "what"]
             ):
-                response = self.problem_solver.get_complexity()
+                try:
+                    response = self.problem_solver.get_complexity()
+                except Exception as e:
+                    log.exception(f"Skill error: {e}")
+                    response = "I encountered an error trying to do that."
                 self._speak(response)
                 return ""
 
@@ -3893,7 +3224,6 @@ class JARVIS:
             "what is on my screen",
             "what's on screen",
             "look at my screen",
-            "what do you see",
             "describe my screen",
             "what am i looking at",
             "what's open",
@@ -3901,19 +3231,31 @@ class JARVIS:
         ]
         if any(t in text_lower for t in vision_triggers):
             self._speak("Looking...")
-            response = self.vision.what_is_on_screen()
+            try:
+                response = self.vision.what_is_on_screen()
+            except Exception as e:
+                log.exception(f"Skill error: {e}")
+                response = "I encountered an error trying to do that."
             self._speak(response)
             return ""
 
         if "read" in text_lower and "screen" in text_lower:
             self._speak("Reading your screen...")
-            response = self.vision.read_text_from_screen()
+            try:
+                response = self.vision.read_text_from_screen()
+            except Exception as e:
+                log.exception(f"Skill error: {e}")
+                response = "I encountered an error trying to do that."
             self._speak(response)
             return ""
 
         if "summarize" in text_lower and "screen" in text_lower:
             self._speak("One sec...")
-            response = self.vision.summarize_screen()
+            try:
+                response = self.vision.summarize_screen()
+            except Exception as e:
+                log.exception(f"Skill error: {e}")
+                response = "I encountered an error trying to do that."
             self._speak(response)
             return ""
 
@@ -3928,7 +3270,11 @@ class JARVIS:
                 .strip()
             )
             self._speak("Checking...")
-            response = self.vision.find_on_screen(query)
+            try:
+                response = self.vision.find_on_screen(query)
+            except Exception as e:
+                log.exception(f"Skill error: {e}")
+                response = "I encountered an error trying to do that."
             self._speak(response)
             return ""
 
@@ -3943,59 +3289,11 @@ class JARVIS:
             ]
         ):
             self._speak("Checking for errors...")
-            response = self.vision.check_error_on_screen()
-            self._speak(response)
-            return ""
-
-        # ── Camera Vision (webcam — NO screenshots, all in RAM) ──────
-        camera_triggers = [
-            "what is in my hand",
-            "what's in my hand",
-            "whats in my hand",
-            "what am i holding",
-            "what do i have",
-            "look at this",
-            "look at what i have",
-            "can you see what",
-            "can you identify",
-            "tell me what this is",
-            "what object",
-            "identify this object",
-            "scan this object",
-            "use camera",
-            "take a look at this",
-            "check the camera",
-            "what am i showing",
-            "what do i hold",
-            "see this",
-        ]
-        if any(t in text_lower for t in camera_triggers):
-            self._speak("Let me take a look...")
-            response = self.vision.what_am_i_holding()
-            self._speak(response)
-            return ""
-
-        # "What is this" / "identify this" / "what do you see" via camera
-        if any(
-            t in text_lower
-            for t in [
-                "what is this",
-                "what's this",
-                "whats this",
-                "identify this",
-                "recognize this",
-                "what do you see",
-                "scan this",
-                "analyze this",
-            ]
-        ):
-            # Check if asking about screen or camera
-            if "screen" in text_lower or "monitor" in text_lower:
-                self._speak("Looking at your screen...")
-                response = self.vision.what_is_on_screen()
-            else:
-                self._speak("Looking through the camera...")
-                response = self.vision.identify_objects()
+            try:
+                response = self.vision.check_error_on_screen()
+            except Exception as e:
+                log.exception(f"Skill error: {e}")
+                response = "I encountered an error trying to do that."
             self._speak(response)
             return ""
 
@@ -4014,7 +3312,11 @@ class JARVIS:
             ]
         ):
             self._speak("Looking...")
-            response = self.vision.look_at_camera()
+            try:
+                response = self.vision.look_at_camera()
+            except Exception as e:
+                log.exception(f"Skill error: {e}")
+                response = "I encountered an error trying to do that."
             self._speak(response)
             return ""
 
@@ -4031,7 +3333,11 @@ class JARVIS:
             ]
         ):
             self._speak("Looking at you...")
-            response = self.vision.identify_person()
+            try:
+                response = self.vision.identify_person()
+            except Exception as e:
+                log.exception(f"Skill error: {e}")
+                response = "I encountered an error trying to do that."
             self._speak(response)
             return ""
 
@@ -4041,7 +3347,11 @@ class JARVIS:
             for t in ["camera", "in front", "board", "paper", "book", "whiteboard"]
         ):
             self._speak("Reading...")
-            response = self.vision.read_text_from_camera()
+            try:
+                response = self.vision.read_text_from_camera()
+            except Exception as e:
+                log.exception(f"Skill error: {e}")
+                response = "I encountered an error trying to do that."
             self._speak(response)
             return ""
 
@@ -4086,8 +3396,32 @@ class JARVIS:
             return ""
 
         # ══════════════════════════════════════════════════════
+        # 🎨 IMAGE GENERATION — "generate a car" / "draw a sunset"
+        # ══════════════════════════════════════════════════════
+        _IMG_TRIGGERS = [
+            "generate a ", "generate an ", "generate image of ", "generate picture of ",
+            "draw a ", "draw an ", "draw me a ", "draw me an ",
+            "create an image of ", "create a image of ", "create a picture of ",
+            "make a picture of ", "make an image of ", "make a drawing of ",
+            "paint a ", "paint an ", "show me a picture of ", "show me an image of ",
+            "create art of ", "generate art of ", "ai image of ", "ai art of ",
+        ]
+        _img_hit = next((t for t in _IMG_TRIGGERS if text_lower.startswith(t)), None)
+        if _img_hit:
+            _img_prompt = text_lower[len(_img_hit):].strip().rstrip(".,!?")
+            if _img_prompt and len(_img_prompt) > 2:
+                if self.image_gen:
+                    self._speak(f"Generating '{_img_prompt}' now, sir. Give me a moment.")
+                    _img_result = self.image_gen.generate_image(_img_prompt)
+                    self._speak(_img_result)
+                else:
+                    self._speak("Image generator failed to load at startup, sir.")
+                return ""
+
+        # ══════════════════════════════════════════════════════
         #  VS CODE WRITER — Voice → Gemini → VS Code Animation
         # ══════════════════════════════════════════════════════
+
 
         # ── Triggers that clearly mean "write code in VS Code" ─
         _vscode_write_triggers = [
@@ -4784,7 +4118,7 @@ class JARVIS:
 
         # ── Settings pages ─────────────────────────────────────
         # "open wifi settings" / "open display settings"
-        if "settings" in text_lower:
+        if any(t in text_lower for t in ["open settings", "show settings", "launch settings", "windows settings"]):
             from skills.app_control import SETTINGS_MAP
 
             page = next((k for k in SETTINGS_MAP if k in text_lower), "")
@@ -4932,7 +4266,11 @@ class JARVIS:
 
         elif intent == "close_app":
             app = extract_app_name(text)
-            response = self.app_ctrl.close_app(app)
+            try:
+                response = self.app_ctrl.close_app(app)
+            except Exception as e:
+                log.exception(f"Skill error: {e}")
+                response = "I encountered an error trying to do that."
 
         elif intent == "system_volume":
             text_lower = text.lower()
@@ -5081,21 +4419,65 @@ class JARVIS:
             else:
                 self._speak("Let me check the weather for you!")
 
-            response = self.weather.get_current(_weather_city)
+            try:
+                response = self.weather.get_current(_weather_city)
+            except Exception as e:
+                log.exception(f"Skill error: {e}")
+                response = "I encountered an error trying to do that."
 
         elif intent == "news":
             self._speak("Fetching the latest headlines!")
             category = self.news.detect_category(text)
-            response = self.news.get_headlines(category)
+            try:
+                response = self.news.get_headlines(category)
+            except Exception as e:
+                log.exception(f"Skill error: {e}")
+                response = "I encountered an error trying to do that."
 
         elif intent == "youtube":
             query = extract_search_query(text)
-            self._speak(f"Opening YouTube for {query}!")
-            response = self.browser.youtube_play(query)
+            if not query:
+                # Vague command → ask what they want to watch
+                self._speak("What would you like to watch on YouTube, sir?")
+                followup = self.listener.listen(timeout=8)
+                if followup and followup.strip():
+                    query = extract_search_query(followup) or followup.lower().strip()
+                    self._speak(f"Playing {query} on YouTube!")
+                    response = self.browser.youtube_play(query)
+                else:
+                    self._speak("Opening YouTube for you, sir!")
+                    response = self.browser.youtube_play("")
+            else:
+                self._speak(f"Playing {query} on YouTube!")
+                response = self.browser.youtube_play(query)
 
         elif intent == "media":
-            self._speak("Got it!")
-            response = self.media.execute(text)
+            # ── First, check if we have a specific song/artist in the command ──
+            media_result = self.media.execute(text)
+
+            if media_result == "__ASK_MUSIC__":
+                # Vague command ("play some music") → ASK first, then act
+                self._speak("What would you like to listen to, sir?")
+                # Wait for follow-up voice input
+                followup = self.listener.listen(timeout=8)
+                if followup and followup.strip():
+                    # Strip common filler words from the follow-up
+                    query = followup.lower()
+                    for filler in ["play", "search", "something like", "please"]:
+                        query = query.replace(filler, "").strip()
+                    if query:
+                        self._speak(f"Playing {followup} on Spotify!")
+                        response = self.media.spotify_search_and_play(query)
+                    else:
+                        self._speak("Okay, resuming playback!")
+                        response = self.media.play_pause()
+                else:
+                    # No follow-up heard → just resume/play
+                    self._speak("Starting Spotify for you, sir!")
+                    response = self.media.play_pause()
+            else:
+                self._speak("Got it!")
+                response = media_result
 
         elif intent == "browser_search":
             query = extract_search_query(text)
@@ -5122,7 +4504,11 @@ class JARVIS:
 
         elif intent == "shopping":
             self._speak("Let me search that for you!")
-            response = self.shopping.execute(text)
+            try:
+                response = self.shopping.execute(text)
+            except Exception as e:
+                log.exception(f"Skill error: {e}")
+                response = "I encountered an error trying to do that."
 
         elif intent == "wikipedia":
             # Conversational / opinion / ELI5 queries → Gemini, not Wikipedia
@@ -5161,22 +4547,27 @@ class JARVIS:
             if _wiki_casual:
                 response = _ask_gemini(text)
             else:
-                query = extract_search_query(text)
-                if not query:
-                    query = text
                 self._speak(f"Looking that up...")
-                response = self.browser.wikipedia_search(query)
+                response = self.web_search.search(text)
 
         # ── Files ─────────────────────────────────────────────
         elif intent == "file_create":
             self._speak("Creating your note!")
-            response = self.files.write_note(text)
+            try:
+                response = self.files.write_note(text)
+            except Exception as e:
+                log.exception(f"Skill error: {e}")
+                response = "I encountered an error trying to do that."
 
         elif intent == "file_open":
             m = stdlib_re.search(r"open (?:file )?(.+)", text, stdlib_re.IGNORECASE)
             filename = m.group(1).strip() if m else text
             self._speak(f"Opening {filename}!")
-            response = self.files.open_file(filename)
+            try:
+                response = self.files.open_file(filename)
+            except Exception as e:
+                log.exception(f"Skill error: {e}")
+                response = "I encountered an error trying to do that."
 
         # ── Reminders ─────────────────────────────────────────
         elif intent in ("reminder", "timer"):
@@ -5189,743 +4580,74 @@ class JARVIS:
                         1 if "second" in unit else 60 if "minute" in unit else 3600
                     )
                     self._speak(f"Setting a timer for {amount} {unit}s!")
-                    response = self.reminder.set_timer(secs)
+                    try:
+                        response = self.reminder.set_timer(secs)
+                    except Exception as e:
+                        log.exception(f"Skill error: {e}")
+                        response = "I encountered an error trying to do that."
                 else:
                     response = "How many seconds or minutes for the timer?"
             else:
                 mins, at_time, msg = self.reminder.parse_time_from_text(text)
                 if mins or at_time:
                     self._speak("Got it! Setting your reminder.")
-                    response = self.reminder.set_reminder(
-                        msg, minutes=mins, at_time=at_time
-                    )
+                    try:
+                        response = self.reminder.set_reminder(
+                            msg, minutes=mins, at_time=at_time
+                        )
+                    except Exception as e:
+                        log.exception(f"Skill error: {e}")
+                        response = "I encountered an error trying to do that."
                 else:
                     response = "Please say when to remind you, like 'in 30 minutes' or 'at 6 PM'."
 
         # ── Vision ────────────────────────────────────────────
         elif intent == "vision_screen":
             self._speak("Let me take a look at your screen!")
-            response = self.vision.analyze_screen()
+            try:
+                response = self.vision.analyze_screen()
+            except Exception as e:
+                log.exception(f"Skill error: {e}")
+                response = "I encountered an error trying to do that."
 
         elif intent in ("vision_image",):
             self._speak("Analyzing the image now!")
-            response = self.vision.analyze_screen(
-                "What do you see in this image? Describe it in detail."
-            )
+            try:
+                response = self.vision.analyze_screen(
+                    "What do you see in this image? Describe it in detail."
+                )
+            except Exception as e:
+                log.exception(f"Skill error: {e}")
+                response = "I encountered an error trying to do that."
 
         # ── Phase 4: Email ────────────────────────────────────
         elif intent == "send_email":
-            to_name, subject, body = self.email.parse_email_command(text)
+            action_str, to_name, subject, body, extra = self.email.parse_email_command(text)
             if to_name and body:
                 self._speak(f"Sending email to {to_name}. Just a moment!")
-                response = self.email.send_email(to_name, subject, body)
+                try:
+                    response = self.email.send_email(to_name, subject, body)
+                except Exception as e:
+                    log.exception(f"Skill error: {e}")
+                    response = "I encountered an error trying to do that."
             else:
                 response = "Who should I email and what should I say? For example: email mom saying I'll be late."
 
         elif intent == "read_email":
             self._speak("Let me check your emails!")
             if "unread" in text.lower():
-                response = self.email.check_unread()
-            else:
-                response = self.email.read_recent_emails(5)
-
-        # ── Phase 4: WhatsApp ─────────────────────────────────
-
-        # ── WA: Stats / Analytics ─────────────────────────────
-        # WA: Add Contact
-        # "add contact Teja" / "add Teja to contacts" / "save contact boss as Kiran"
-        elif any(
-            p in text_lower
-            for p in ["add contact", "add to contacts", "save contact", "new contact"]
-        ):
-            _ac_m = re.search(
-                r"(?:add|save|new)\s+contact\s+(\w+)(?:\s+as\s+(\w+))?", text_lower
-            )
-            if not _ac_m:
-                _ac_m = re.search(r"add\s+(\w+)\s+to\s+contacts", text_lower)
-            if _ac_m:
-                _ac_name = _ac_m.group(1).strip()
-                _ac_display = (
-                    (_ac_m.group(2) or "").strip() if len(_ac_m.groups()) > 1 else ""
-                )
-                response = self.whatsapp.add_contact(_ac_name, _ac_display)
-            else:
-                response = (
-                    "Say: 'add contact Teja' or 'add contact boss as Kiran', sir."
-                )
-
-        # WA: List Contacts
-        elif any(
-            p in text_lower
-            for p in [
-                "list contacts",
-                "my contacts",
-                "show contacts",
-                "who are my contacts",
-            ]
-        ):
-            response = self.whatsapp.list_contacts()
-
-        # WA: Daily summary / what did I send today
-        elif any(
-            p in text_lower
-            for p in [
-                "what did i send today",
-                "what did i send",
-                "whatsapp daily",
-                "daily summary whatsapp",
-            ]
-        ):
-            response = self.whatsapp.daily_summary()
-
-        # WA: Summarize chat
-        elif any(
-            p in text_lower
-            for p in [
-                "summarize my chat",
-                "summarise my chat",
-                "summarize chat",
-                "summarise chat",
-            ]
-        ):
-            _sum_m = re.search(
-                r"(?:summarize|summarise)\s+(?:my\s+)?chat\s+with\s+(\w+)", text_lower
-            )
-            _sum_contact = _sum_m.group(1) if _sum_m else ""
-            if _sum_contact:
-                self._speak(f"Summarizing chat with {_sum_contact}, sir.")
-                response = self.whatsapp.summarize_chat(_sum_contact)
-            else:
-                response = "Who should I summarize the chat with, sir?"
-
-        # WA: Contact Status (online / last seen)
-        # Catches: "is Sarvani online" / "last seen Sarvani" /
-        #          "last seen of Sarvani" / "check Sarvani status" /
-        #          "when did Sarvani come online" / "Sarvani online"
-        elif re.search(
-            r"(?:is\s+\w+\s+online|last\s+seen\s+(?:of\s+)?\w+|"
-            r"when\s+(?:was|did)\s+\w+|check\s+\w+\s+status|"
-            r"\w+\s+online\??|\w+\s+last\s+seen)",
-            text_lower,
-        ):
-            _stat_m = re.search(
-                r"(?:is\s+(\w+)\s+online|"
-                r"last\s+seen\s+(?:of\s+)?(\w+)|"
-                r"when\s+(?:was|did)\s+(\w+)|"
-                r"check\s+(\w+)\s+status|"
-                r"(\w+)\s+(?:online|last\s+seen))",
-                text_lower,
-            )
-            if _stat_m:
-                # Pick whichever group matched
-                _stat_contact = next((g for g in _stat_m.groups() if g), "").strip()
-                # Filter out noise words
-                if _stat_contact in {"when", "is", "check", "the", "of", "a"}:
-                    _stat_contact = ""
-                if _stat_contact:
-                    self._speak(f"Checking {_stat_contact}'s status on WhatsApp, sir.")
-                    response = self.whatsapp.get_contact_status(_stat_contact)
-                else:
-                    response = "Who should I check status for, sir?"
-            else:
-                response = "Who should I check status for, sir?"
-
-        # WA: Emoji-only send
-        # "send heart emoji to mom" / "send fire emoji to Sarvani"
-        # "emoji to NAME" (no emoji name → default to ❤️)
-        elif re.search(r"(?:send\s+)?(?:\w+\s+)?emoji\s+to\s+\w+", text_lower):
-            _em_m = re.search(r"(?:send\s+)?(\w+)\s+emoji\s+to\s+(\w+)", text_lower)
-            _em_bare = re.search(r"emoji\s+to\s+(\w+)", text_lower)
-            if _em_m:
-                _em_emoji = _em_m.group(1).strip()
-                _em_contact = _em_m.group(2).strip()
-                self._speak(f"Sending {_em_emoji} emoji to {_em_contact}, sir.")
-                response = self.whatsapp.send_emoji_only(_em_contact, _em_emoji)
-            elif _em_bare:
-                _em_contact = _em_bare.group(1).strip()
-                self._speak(f"Sending heart emoji to {_em_contact}, sir.")
-                response = self.whatsapp.send_emoji_only(_em_contact, "heart")
-            else:
-                response = "Say: 'send heart emoji to mom', sir."
-
-        elif any(
-            p in text_lower
-            for p in [
-                "whatsapp stats",
-                "message stats",
-                "who do i message most",
-                "most messaged contact",
-                "most messaged",
-                "who do i text most",
-                "whatsapp analytics",
-            ]
-        ):
-            response = self.whatsapp.get_stats()
-            # If asking specifically about most messaged
-            if any(
-                w in text_lower for w in ["most messaged", "message most", "text most"]
-            ):
-                response = self.whatsapp.most_messaged_contact()
-
-        # ── WA: Daily summary (also handled earlier — whatsapp summary alias) ───
-        elif any(
-            p in text_lower
-            for p in ["whatsapp summary", "daily summary whatsapp", "whatsapp daily"]
-        ):
-            response = self.whatsapp.daily_summary()
-
-        # ── WA: Undo last message ─────────────────────────────
-        elif any(
-            p in text_lower
-            for p in [
-                "undo last message",
-                "delete that message",
-                "delete last message",
-                "unsend message",
-                "delete for everyone",
-            ]
-        ):
-            self._speak("Trying to delete the last message, sir.")
-            response = self.whatsapp.undo_last_message()
-
-        # ── WA: Reply to last contact ─────────────────────────
-        elif text_lower.startswith("reply ") or "reply to last" in text_lower:
-            reply_text = re.sub(r"^reply\s+", "", text, flags=re.IGNORECASE).strip()
-            if reply_text:
-                self._speak(f"Replying: {reply_text}")
-                response = self.whatsapp.reply_to_last(reply_text, self._stop_event)
-            else:
-                response = "What should I reply, sir?"
-
-        # ── WA: Forward last message ──────────────────────────
-        elif any(
-            p in text_lower
-            for p in [
-                "forward last message to",
-                "forward message to",
-                "forward that to",
-            ]
-        ):
-            m = re.search(r"forward (?:last )?message to (.+)", text_lower)
-            if m:
-                fwd_contact = m.group(1).strip()
-                self._speak(f"Forwarding to {fwd_contact}, sir.")
-                response = self.whatsapp.forward_last_message(
-                    fwd_contact, self._stop_event
-                )
-            else:
-                response = "Who should I forward to, sir?"
-
-        # ── WA: Schedule message ──────────────────────────────
-        elif any(
-            p in text_lower
-            for p in [
-                "schedule message",
-                "schedule a message",
-                "schedule whatsapp",
-                "send message at ",
-                "remind me to message",
-                "send good morning at",
-                "send good night at",
-                "message rahul at",
-                "message mom at",
-            ]
-        ):
-            con, msg, t = self.whatsapp.parse_schedule_command(text)
-            if con and msg and t:
-                self._speak(f"Scheduling message to {con} at {t}, sir.")
-                response = self.whatsapp.schedule_message(con, msg, t)
-            else:
-                response = (
-                    "To schedule, say: 'schedule message to mom good night at 22:00'"
-                )
-
-        # ── WA: List scheduled ────────────────────────────────
-        elif any(
-            p in text_lower
-            for p in ["list scheduled", "show scheduled", "what's scheduled"]
-        ):
-            response = self.whatsapp.list_scheduled()
-
-        # ── WA: Send screenshot ───────────────────────────────
-        elif any(
-            p in text_lower for p in ["send screenshot to", "share screenshot with"]
-        ):
-            m = re.search(r"(?:send|share) screenshot (?:to|with) (.+)", text_lower)
-            if m:
-                sc_contact = m.group(1).strip()
-                self._speak(f"Taking and sending screenshot to {sc_contact}, sir.")
-                response = self.whatsapp.send_screenshot(sc_contact)
-            else:
-                response = "Who should I send the screenshot to, sir?"
-
-        # ── WA: AI Compose and send ───────────────────────────
-        elif any(
-            p in text_lower
-            for p in [
-                "compose message",
-                "write message to",
-                "send formal",
-                "send casual",
-                "compose a formal",
-                "compose formal",
-                "compose an apology",
-                "compose apology",
-                "write a formal",
-                "write an apology",
-                "draft a message",
-                "draft message",
-            ]
-        ):
-            # Detect tone
-            tone = (
-                "formal"
-                if "formal" in text_lower
-                else "apologetic"
-                if any(
-                    w in text_lower
-                    for w in ["apology", "apologetic", "sorry", "apologies"]
-                )
-                else "friendly"
-            )
-            # Extract contact
-            _cmp_m = re.search(
-                r"(?:compose|write|draft|send)\s+(?:a\s+)?(?:message|formal|casual|apology|apologies|sorry)?\s*(?:message\s+)?to\s+(?:my\s+)?(\w+)\s*(.*)?",
-                text_lower,
-            )
-            if _cmp_m:
-                ai_contact = _cmp_m.group(1).strip()
-                ai_msg_hint = (_cmp_m.group(2) or "").strip()
-                # Generate the message with Gemini
-                if not ai_msg_hint:
-                    ai_msg_hint = f"compose a {tone} message"
-                _composed = self.gemini.ask(
-                    f"Write a {tone} WhatsApp message to send to '{ai_contact}'. "
-                    f"Context: {ai_msg_hint}. "
-                    "Return ONLY the message text, no explanation, no quotes, no markdown."
-                )
-                self._speak(f"Here's what I'll send to {ai_contact}: {_composed}")
-                self._speak("Should I send it? Say yes to confirm.")
                 try:
-                    import speech_recognition as _sr_cmp
-
-                    _rec_cmp = _sr_cmp.Recognizer()
-                    with _sr_cmp.Microphone() as _src_cmp:
-                        _rec_cmp.adjust_for_ambient_noise(_src_cmp, duration=0.2)
-                        _aud_cmp = _rec_cmp.listen(
-                            _src_cmp, timeout=4, phrase_time_limit=3
-                        )
-                    _conf_cmp = _rec_cmp.recognize_google(_aud_cmp).lower()
-                    if any(
-                        w in _conf_cmp for w in ["yes", "yeah", "send", "ok", "sure"]
-                    ):
-                        response = self.whatsapp.send_message(ai_contact, _composed)
-                    else:
-                        response = "Message not sent, sir. Kept in memory if you change your mind."
-                except Exception:
-                    response = f"Composed: '{_composed}' — say 'send to {ai_contact}' to send it."
+                    response = self.email.check_unread()
+                except Exception as e:
+                    log.exception(f"Skill error: {e}")
+                    response = "I encountered an error trying to do that."
             else:
-                response = "Who should I compose the message for, sir? Say: 'compose formal message to boss'"
-
-        # "tell Sarvani I'll be late" — narrow: "tell NAME ..." (not "tell me")
-        elif re.match(r"tell\s+(?!me\b|the\b|a\b)(\w+)\s+(.*)", text_lower):
-            _tell_m = re.match(r"tell\s+(?!me\b|the\b|a\b)(\w+)\s+(.*)", text_lower)
-            _ai_tell_contact = _tell_m.group(1).strip()
-            _ai_tell_msg = _tell_m.group(2).strip()
-            _tell_tone = "apologetic" if "sorry" in text_lower else "friendly"
-            self._speak(f"Composing message to {_ai_tell_contact}, sir.")
-            response = self.whatsapp.compose_and_send(
-                _ai_tell_contact, _ai_tell_msg, tone=_tell_tone
-            )
-
-        # ── WA: Translate and send ────────────────────────────
-        # "send good morning in Hindi to mom" / "send in Tamil to NAME" / "translate and send"
-        elif (
-            re.search(
-                r" in (hindi|tamil|telugu|kannada|malayalam|english|"
-                r"french|spanish|arabic|chinese|japanese)",
-                text_lower,
-            )
-            or "translate and send" in text_lower
-        ):
-            _lang_re = re.search(
-                r"(.+?)\s+in\s+(hindi|tamil|telugu|kannada|malayalam|english|"
-                r"french|spanish|arabic|chinese|japanese)",
-                text_lower,
-            )
-            if _lang_re:
-                # Strip noise prefixes from the message part
-                _raw_msg = _lang_re.group(1)
-                _language = _lang_re.group(2).title()
-                for _pfx in ["send ", "translate ", "say ", "message "]:
-                    _raw_msg = _raw_msg.replace(_pfx, "").strip()
-                translate_text = _raw_msg.strip()
-                language = _language
-                # Extract contact from "to NAME" anywhere in the sentence
-                to_match = re.search(r"\bto\s+(\w+)", text_lower)
-                if to_match:
-                    tl_contact = to_match.group(1)
-                    self._speak(f"Translating to {language} and sending, sir.")
-                    response = self.whatsapp.translate_and_send(
-                        tl_contact, translate_text, language
-                    )
-                else:
-                    response = "Who should I send the translated message to, sir?"
-            else:
-                response = "Say: 'send good morning in Hindi to mom'"
-
-        # ── WA: Group message ─────────────────────────────────
-        elif any(
-            p in text_lower
-            for p in ["send to group", "message group", "whatsapp group"]
-        ):
-            m = re.search(r"(?:send to|message) group (.+?) (.+)", text_lower)
-            if m:
-                grp_name = m.group(1).strip()
-                grp_msg = m.group(2).strip()
-                self._speak(f"Sending to group {grp_name}, sir.")
-                response = self.whatsapp.send_to_group(
-                    grp_name, grp_msg, self._stop_event
-                )
-            else:
-                response = "Say: 'send to group College hey everyone'"
-
-        # ── WA: Bulk send ─────────────────────────────────────
-        elif any(
-            p in text_lower
-            for p in ["send to multiple", "message everyone", "send to all"]
-        ):
-            contacts_bulk = self.whatsapp.parse_bulk_contacts(text)
-            bulk_msg = re.search(r"saying (.+)", text_lower)
-            if contacts_bulk and bulk_msg:
-                self._speak(f"Sending to {len(contacts_bulk)} contacts, sir.")
-                response = self.whatsapp.send_to_multiple(
-                    contacts_bulk, bulk_msg.group(1), self._stop_event
-                )
-            else:
-                response = (
-                    "Say: 'send to multiple mom dad friend saying happy new year'"
-                )
-
-        # ── WA: Auto response ─────────────────────────────────
-        elif any(
-            p in text_lower
-            for p in ["enable auto response", "auto reply on", "turn on auto reply"]
-        ):
-            msg_match = re.search(
-                r"(?:enable auto response|auto reply on)\s*(.*)", text_lower
-            )
-            ar_msg = msg_match.group(1).strip() if msg_match else ""
-            response = self.whatsapp.enable_auto_response(ar_msg)
-
-        elif any(
-            p in text_lower
-            for p in ["disable auto response", "auto reply off", "turn off auto reply"]
-        ):
-            response = self.whatsapp.disable_auto_response()
-
-        # ── WA: Check / Read messages ─────────────────────────
-        elif any(
-            p in text_lower
-            for p in [
-                "any unread",
-                "unread whatsapp",
-                "what did i miss",
-                "new messages",
-                "any messages",
-                "read whatsapp",
-            ]
-        ):
-            self._speak("Checking your WhatsApp, sir.")
-            try:
-                from skills.notifications_checker import NotificationsChecker
-
-                result = NotificationsChecker().check_whatsapp_only()
-                self._speak(result)
-            except Exception:
-                self._speak("Please open WhatsApp Desktop to see your messages.")
-
-        # ── WA: SEND (main flow, with confirmation) ───────────
-        elif intent == "whatsapp":
-            contact, message = self.whatsapp.parse_whatsapp_command(text)
-            if contact:
-                if not message:
-                    message = "Hi"
-                self._speak(
-                    f"Ready to send '{message}' to {contact}. "
-                    f"Say yes to confirm, or stop to cancel."
-                )
-                confirmed = False
                 try:
-                    import speech_recognition as _sr
+                    response = self.email.read_recent_emails(5)
+                except Exception as e:
+                    log.exception(f"Skill error: {e}")
+                    response = "I encountered an error trying to do that."
 
-                    _r = _sr.Recognizer()
-                    with _sr.Microphone() as _src:
-                        _r.adjust_for_ambient_noise(_src, duration=0.3)
-                        _audio = _r.listen(_src, timeout=4, phrase_time_limit=3)
-                    # Use recognize_google (fast) for yes/no; Whisper fallback
-                    try:
-                        _conf = _r.recognize_google(_audio).lower().strip()
-                    except Exception:
-                        _conf = (
-                            _r.recognize_whisper(
-                                _audio, model="tiny", language="english"
-                            )
-                            .lower()
-                            .strip()
-                        )
-                    if any(
-                        w in _conf
-                        for w in [
-                            "yes",
-                            "yeah",
-                            "yep",
-                            "send",
-                            "confirm",
-                            "ok",
-                            "okay",
-                            "do it",
-                        ]
-                    ):
-                        confirmed = True
-                    elif any(w in _conf for w in ["stop", "cancel", "no", "abort"]):
-                        self._speak("Cancelled, sir.")
-                        response = ""
-                    else:
-                        self._speak(f"I heard '{_conf}'. Cancelled to be safe.")
-                        response = ""
-                except Exception:
-                    self._speak("Couldn't hear confirmation. Cancelled, sir.")
-                    response = ""
-                if confirmed:
-                    self._speak(f"Sending to {contact}, sir!")
-                    response = self.whatsapp.send_message(
-                        contact, message, stop_event=self._stop_event
-                    )
-            else:
-                response = "Who should I message? Say: message to Sarvani hello"
-
-        # ── Time & Date ───────────────────────────────────────
-        elif intent == "time_date":
-            now = datetime.now()
-            text_lower = text.lower()
-            # Check if asking about another city/timezone
-            _tz_cities = {
-                "new york": "America/New_York",
-                "los angeles": "America/Los_Angeles",
-                "london": "Europe/London",
-                "paris": "Europe/Paris",
-                "tokyo": "Asia/Tokyo",
-                "dubai": "Asia/Dubai",
-                "singapore": "Asia/Singapore",
-                "sydney": "Australia/Sydney",
-                "mumbai": "Asia/Kolkata",
-                "delhi": "Asia/Kolkata",
-                "chennai": "Asia/Kolkata",
-                "kolkata": "Asia/Kolkata",
-                "beijing": "Asia/Shanghai",
-                "shanghai": "Asia/Shanghai",
-                "moscow": "Europe/Moscow",
-                "berlin": "Europe/Berlin",
-                "toronto": "America/Toronto",
-                "chicago": "America/Chicago",
-                "bangkok": "Asia/Bangkok",
-                "seoul": "Asia/Seoul",
-                "istanbul": "Europe/Istanbul",
-                "cairo": "Africa/Cairo",
-                "johannesburg": "Africa/Johannesburg",
-                "nairobi": "Africa/Nairobi",
-                "mexico city": "America/Mexico_City",
-                "sao paulo": "America/Sao_Paulo",
-                "buenos aires": "America/Argentina/Buenos_Aires",
-            }
-            _found_tz = None
-            for city, tz in _tz_cities.items():
-                if city in text_lower:
-                    _found_tz = (city, tz)
-                    break
-            if _found_tz:
-                try:
-                    import zoneinfo
-
-                    _city_name, _tz_name = _found_tz
-                    _tz = zoneinfo.ZoneInfo(_tz_name)
-                    from datetime import timezone as _tzmod
-
-                    _city_time = datetime.now(_tz)
-                    response = f"It's {_city_time.strftime('%I:%M %p')} in {_city_name.title()} right now, sir."
-                except Exception:
-                    response = f"I'd check Google for the current time in {_found_tz[0].title()}, sir."
-            elif "date" in text_lower or "day" in text_lower:
-                response = f"Today is {now.strftime('%A, %B %d, %Y')}."
-            else:
-                response = f"The time is {now.strftime('%I:%M %p')}."
-
-        # ── Conversation control ──────────────────────────────
-        elif intent == "reset":
-            self.gemini.reset_conversation()
-            response = "Conversation cleared. Fresh start!"
-
-        elif intent == "stop":
-            # Stop notification watcher gracefully
-            if self.notif_watcher:
-                self.notif_watcher.stop()
-            response = f"Goodbye, {self.prefs.name}! Shutting down JARVIS."
-            self._speak(response)
-            self._running = False
-            return response
-
-        # ── Jokes ─────────────────────────────────────────────
-        elif intent == "joke":
-            self._speak("Oh, I've got a good one!")
-            response = self.gemini.ask(
-                "Tell me a short, funny tech or nerdy joke. Keep it to 2-3 sentences max."
-            )
-
-        # ── Voice Settings ────────────────────────────────────
-        # Only triggers when user explicitly says "voice" OR says a
-        # known voice name. Does NOT steal weather/time/chat commands.
-        elif (
-            any(
-                t in text_lower
-                for t in [
-                    "change voice",
-                    "switch voice",
-                    "change your voice",
-                    "use voice",
-                    "set voice",
-                    "voice to",
-                ]
-            )
-            or self.speaker.find_voice_in_text(text_lower) is not None
-        ):
-            found = self.speaker.find_voice_in_text(text_lower)
-            if found:
-                response = self.speaker.set_voice(found)
-                # Play test sentence in new voice after small delay
-                import threading as _th
-
-                def _demo():
-                    import time as _t
-
-                    _t.sleep(1.5)
-                    self.speaker.speak("Hello! This is my new voice. Do you like it?")
-
-                _th.Thread(target=_demo, daemon=True).start()
-            elif "british" in text_lower:
-                response = self.speaker.set_voice("george")
-            elif "female" in text_lower:
-                response = self.speaker.set_voice("af_bella")
-            elif "male" in text_lower or "american" in text_lower:
-                response = self.speaker.set_voice("am_adam")
-            elif "default" in text_lower or "original" in text_lower:
-                response = self.speaker.set_voice("bm_george")
-            else:
-                response = (
-                    "Which voice? Say: change voice to George, Bella, Adam, etc. "
-                    "Or say 'show voices' for full list."
-                )
-
-        elif (
-            "what voice" in text_lower
-            or "which voice" in text_lower
-            or "current voice" in text_lower
-        ):
-            response = f"Currently using {self.speaker.current_voice_name()}."
-
-        elif (
-            "list voices" in text_lower
-            or "what voices" in text_lower
-            or "show voices" in text_lower
-        ):
-            response = (
-                "Voices: George, Lewis (British male). "
-                "Adam, Michael (American male). "
-                "Bella, Nicole, Sarah, Sky, Emma, Isabella (Female). "
-                "Say: change voice to [name]."
-            )
-
-        elif "speak faster" in text_lower or "talk faster" in text_lower:
-            self.speaker.set_rate(self.speaker._rate + 25)
-            response = "Speaking faster now!"
-
-        elif "speak slower" in text_lower or "talk slower" in text_lower:
-            self.speaker.set_rate(self.speaker._rate - 25)
-            response = "Speaking slower now!"
-
-        # ── Fallback: WolframAlpha → Gemini AI ──────────────────
-        else:
-            # Check if AI is actually available
-            _gemini_working = bool(self.gemini._working_model)
-            _local_working = (
-                self.gemini._local_llm.is_available
-                if hasattr(self.gemini, "_local_llm")
-                else False
-            )
-
-            if not _gemini_working and not _local_working:
-                # Both AIs unavailable — give a helpful message
-                response = (
-                    "My AI is at full capacity right now, sir — the API quota was reached. "
-                    "I can still help with system commands, weather, apps, reminders, "
-                    "and files. The AI resets at midnight. What else can I do for you?"
-                )
-            else:
-                # 1. Try WolframAlpha for factual/computational questions
-                if is_wolfram_query(text):
-                    _wa_ans = self.wolfram.query(text)
-                    if _wa_ans:
-                        response = _wa_ans
-                    else:
-                        # Wolfram couldn't answer — fall through to Gemini/LLM
-                        mem_ctx = self.memory.get_context_for_llm()
-                        # Inject RAG — relevant past conversations
-                        try:
-                            from brain.memory import ConversationMemory as _CM
-                            _rag_ctx = _CM().get_relevant_history(text, top_k=3)
-                        except Exception:
-                            _rag_ctx = ""
-                        enriched = text
-                        if mem_ctx or _rag_ctx:
-                            enriched = f"{mem_ctx}\n{_rag_ctx}\n\nSrini says: {text}".strip()
-                        response = self.gemini.ask_streaming(
-                            enriched,
-                            on_sentence=self._speak,
-                        )
-                else:
-                    # 2. Conversational / task question → Gemini with memory context
-                    mem_ctx = self.memory.get_context_for_llm()
-                    # Inject RAG — relevant past conversations
-                    try:
-                        from brain.memory import ConversationMemory as _CM2
-                        _rag_ctx2 = _CM2().get_relevant_history(text, top_k=3)
-                    except Exception:
-                        _rag_ctx2 = ""
-                    enriched = text
-                    if mem_ctx or _rag_ctx2:
-                        enriched = f"{mem_ctx}\n{_rag_ctx2}\n\nSrini says: {text}".strip()
-                    response = self.gemini.ask_streaming(
-                        enriched,
-                        on_sentence=self._speak,
-                    )
-
-        # ── Save to memory (works even without AI!) ───────────
-        save_response = response if response else "(no AI response — offline)"
-        self.history.save(text, save_response, intent, self._session)
-
-        # ── Track for correction learning ─────────────────────
-        # Saves what JARVIS did so next message can correct it
-        self.corrector.track(text, intent, response or "")
-
-        return response
-
-    # ─── Main Loop (always listening) ─────────────────────────
-    def run(self):
-        """Start the main voice interaction loop (always active)."""
-        self.greet()
-
-        # ── Startup: announce unread message counts ────────────
-        try:
             startup_parts = []
             # Check Gmail/WhatsApp/Windows unread counts
             try:
@@ -5944,8 +4666,7 @@ class JARVIS:
                 self._speak("Quick update. " + " ".join(startup_parts))
             else:
                 self._speak("No pending notifications, sir. All clear!")
-        except Exception as e:
-            log.debug(f"Startup notification check failed: {e}")
+
 
         # ── Start anomaly detector background thread ───────────
         # Monitors system health every 60s, alerts on CPU/RAM anomalies
@@ -6243,3 +4964,4 @@ if __name__ == "__main__":
         if not face_auth_check(jarvis):
             sys.exit(1)
         jarvis.run()
+

@@ -57,6 +57,7 @@ class CalendarSkill:
     # ═══════════════════════════════════════════════════════════
 
     def add_event(self, text: str) -> str:
+        print(f"METHOD: add_event")
         """
         Parse and add an event from natural language.
         Examples:
@@ -84,12 +85,19 @@ class CalendarSkill:
         if not event_name:
             event_name = "Event"
 
+        # Check for duplicates
+        date_str = event_date.strftime("%Y-%m-%d")
+        time_str = event_time or ""
+        for existing in self._events:
+            if existing.get("name") == event_name and existing.get("date") == date_str and existing.get("time", "") == time_str:
+                return "That event already exists."
+
         # Build event
         event = {
             "id":   self._new_id(),
             "name": event_name,
-            "date": event_date.strftime("%Y-%m-%d"),
-            "time": event_time or "",
+            "date": date_str,
+            "time": time_str,
             "created": datetime.now().isoformat(),
         }
 
@@ -114,7 +122,8 @@ class CalendarSkill:
         if not events:
             return "Nothing scheduled for today. Enjoy your free day!"
 
-        parts = [f"Today you have {len(events)} event(s):"]
+        evt_word = "event" if len(events) == 1 else "events"
+        parts = [f"Today you have {len(events)} {evt_word}:"]
         for e in events:
             time_str = f" at {e['time']}" if e["time"] else ""
             parts.append(f"  • {e['name']}{time_str}")
@@ -128,7 +137,8 @@ class CalendarSkill:
         if not events:
             return "Nothing scheduled for tomorrow."
 
-        parts = [f"Tomorrow you have {len(events)} event(s):"]
+        evt_word = "event" if len(events) == 1 else "events"
+        parts = [f"Tomorrow you have {len(events)} {evt_word}:"]
         for e in events:
             time_str = f" at {e['time']}" if e["time"] else ""
             parts.append(f"  • {e['name']}{time_str}")
@@ -146,12 +156,13 @@ class CalendarSkill:
         if not events:
             return "Nothing scheduled for this week."
 
-        parts = [f"This week you have {len(events)} event(s):"]
+        evt_word = "event" if len(events) == 1 else "events"
+        parts = [f"This week you have {len(events)} {evt_word}:"]
         for e in events:
             d = self._parse_stored_date(e["date"])
-            day_name = d.strftime("%A")
+            date_str = d.strftime("%A") if d else e["date"]
             time_str = f" at {e['time']}" if e["time"] else ""
-            parts.append(f"  • {day_name}: {e['name']}{time_str}")
+            parts.append(f"  • {e['name']} on {date_str}{time_str}")
         return "\n".join(parts)
 
     def get_next_event(self) -> str:
@@ -191,7 +202,8 @@ class CalendarSkill:
         if not events:
             return f"Nothing scheduled for {date_str}."
 
-        parts = [f"On {date_str} you have:"]
+        evt_word = "event" if len(events) == 1 else "events"
+        parts = [f"On {date_str} you have {len(events)} {evt_word}:"]
         for e in events:
             time_str = f" at {e['time']}" if e["time"] else ""
             parts.append(f"  • {e['name']}{time_str}")
@@ -207,7 +219,8 @@ class CalendarSkill:
         if not upcoming:
             return "Your calendar is empty."
 
-        parts = [f"You have {len(upcoming)} upcoming event(s):"]
+        evt_word = "event" if len(upcoming) == 1 else "events"
+        parts = [f"You have {len(upcoming)} upcoming {evt_word}:"]
         for e in upcoming[:10]:  # Max 10
             d = self._parse_stored_date(e["date"])
             date_str = self._friendly_date(d)
@@ -337,6 +350,10 @@ class CalendarSkill:
     def _parse_time(self, text: str) -> str:
         """Parse time from natural language. Returns HH:MM string."""
         t = text.lower()
+
+        # Normalize speech-recognition variants: "p.m." → "pm", "a.m." → "am"
+        t = re.sub(r'\bp\s*\.\s*m\s*\.?\b', 'pm', t)
+        t = re.sub(r'\ba\s*\.\s*m\s*\.?\b', 'am', t)
 
         # "3pm", "3:30pm", "15:30", "3 pm", "at 3"
         # 12-hour with am/pm

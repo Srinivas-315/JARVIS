@@ -259,7 +259,10 @@ class CorrectionLearner:
             from sklearn.pipeline import Pipeline
 
             # Get old training labels from the classifier
-            old_classes = list(model.named_steps["classifier"].classes_)
+            clf_step = model.named_steps.get("classifier") or model.named_steps.get("clf")
+            if clf_step is None:
+                raise KeyError("Neither 'classifier' nor 'clf' step found in the model pipeline.")
+            old_classes = list(clf_step.classes_)
 
             # Add new classes if any
             new_classes = list(set(extra_labels))
@@ -270,7 +273,7 @@ class CorrectionLearner:
             try:
                 # Try incremental learning
                 tfidf = model.named_steps["tfidf"]
-                clf   = model.named_steps["classifier"]
+                clf   = clf_step
 
                 # Transform new examples using existing vocabulary
                 X_new = tfidf.transform(extra_texts)

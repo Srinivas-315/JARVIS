@@ -82,17 +82,24 @@ class Listener:
             # Extra buffer AFTER speech ends — mic/speaker need time to settle
             # Without this, JARVIS hears its own voice echo from the speakers
             if wait_count > 0:
-                time.sleep(1.2)   # was 0.35s — now 1.2s after any speech
+                time.sleep(0.3)   # 300ms settle time (responsive but prevents echo)
             else:
-                time.sleep(0.5)   # minimum silence even when not speaking
+                time.sleep(0.1)   # minimum silence
         except Exception:
-            time.sleep(0.5)
+            time.sleep(0.2)
 
         try:
             # Always create a FRESH Microphone instance — never reuse across threads
             mic = sr.Microphone()
             with mic as source:
-                self._recognizer.adjust_for_ambient_noise(source, duration=0.2)
+                self._recognizer.adjust_for_ambient_noise(source, duration=0.05)
+                # Play a quick feedback beep to signal the mic is open and ready if configured
+                if getattr(config, "FEEDBACK_BEEP", False):
+                    try:
+                        import winsound
+                        winsound.Beep(2000, 100)
+                    except Exception:
+                        pass
                 audio = self._recognizer.listen(
                     source,
                     timeout=timeout,

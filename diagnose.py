@@ -11,6 +11,10 @@ import sys
 import os
 from pathlib import Path
 
+if sys.platform.startswith("win"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+
 ROOT = Path(__file__).parent
 sys.path.insert(0, str(ROOT))
 

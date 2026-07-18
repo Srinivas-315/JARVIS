@@ -290,6 +290,22 @@ class VectorMemory:
         except Exception as e:
             return {"ready": False, "error": str(e)}
 
+    def clear(self):
+        """Clear all stored memories."""
+        if not self._ready:
+            return False
+        try:
+            conn = sqlite3.connect(self._db_path)
+            conn.execute("DELETE FROM memories")
+            conn.commit()
+            conn.close()
+            self._total_entries = 0
+            log.info("VectorMemory cleared successfully ✅")
+            return True
+        except Exception as e:
+            log.error(f"VectorMemory clear error: {e}")
+            return False
+
 
 # ─── Quick test ──────────────────────────────────────────────
 if __name__ == "__main__":

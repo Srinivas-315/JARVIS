@@ -58,12 +58,14 @@ REQUIREMENTS — follow these EXACTLY:
 1. APPROACH: State your approach in 1 sentence
 2. COMPLEXITY: Time and space complexity
 3. CODE: Write the COMPLETE solution
-   - Use the EXACT function/class signature visible in the screenshot
+   - Use the equivalent function/class signature in {language} for the problem visible in the screenshot (for example, if the screenshot shows a Python signature and you are asked to solve in C++, translate the signature to proper C++ structure)
    - Handle ALL edge cases
    - If the problem uses ListNode/TreeNode, do NOT redefine it
 4. DRY RUN: Quick trace through Example 1
 
 FORMAT your response EXACTLY like this:
+PROBLEM_TITLE: [Short name of the problem]
+PROBLEM_TEXT: [1-2 sentences summarizing the core problem]
 APPROACH: [1 sentence]
 COMPLEXITY: Time O(...), Space O(...)
 
@@ -87,6 +89,8 @@ Give the OPTIMAL solution (not brute force). Include:
 4. EDGE CASES: List what edge cases you handle
 
 FORMAT your response EXACTLY like this:
+PROBLEM_TITLE: [Name of the problem]
+PROBLEM_TEXT: [1-2 sentences summarizing the core problem]
 APPROACH: [1 sentence]
 COMPLEXITY: Time O(...), Space O(...)
 
@@ -132,6 +136,19 @@ Cover:
 
 Keep it concise — 4-6 sentences max. Speak naturally."""
 
+_EXPLAIN_SCREEN_PROMPT = """\
+This is a screenshot showing a coding problem.
+
+DO NOT describe the screen visually or say things like "It looks like someone is solving...".
+Instead, provide a clear and structured explanation of the problem itself:
+1. What the problem asks (1-2 sentences)
+2. Input/Output format
+3. Key Idea
+4. Constraints to be aware of
+5. Example Walkthrough
+6. Common Approach
+
+Speak naturally but concisely."""
 
 class ProblemSolver:
     """
@@ -146,11 +163,14 @@ class ProblemSolver:
         self.gemini = gemini_handler
         self.vision = vision_handler
         self._api_key = config.GEMINI_API_KEY
-        self._last_problem = ""
+        # Last solved state (session memory)
+        self._last_problem_title = ""
+        self._last_problem_text = ""
         self._last_solution = ""
         self._last_code = ""
         self._last_approach = ""
         self._last_complexity = ""
+        self._last_timestamp = None
         self._default_language = "Python"
         self._solve_history = []
 
@@ -478,15 +498,42 @@ class ProblemSolver:
                 return "I couldn't read the code from your screen."
 
             code = self._extract_code_block(analysis)
+            
             if code:
                 pyperclip.copy(code)
+                log.info("⚡ Optimized code copied to clipboard")
                 return (f"{analysis}\n\n"
-                        "Optimized code copied to clipboard!")
+                        "I've copied the optimized code to your clipboard. "
+                        "Press Ctrl+V to paste it.")
             return analysis
 
         except Exception as e:
             log.error(f"Optimize error: {e}")
             return "Couldn't analyze the code. Try again."
+
+    # ═══════════════════════════════════════════════════════════
+    # 5. EXPLAIN FROM SCREEN
+    # ═══════════════════════════════════════════════════════════
+
+    def explain_from_screen(self) -> str:
+        """Read code/problem from screen and explain it."""
+        if not self._api_key:
+            return "I need Gemini API to explain code from the screen."
+
+        log.info("📖 Reading code from screen for explanation...")
+
+        try:
+            image_b64 = self._screenshot_to_base64()
+            analysis = self._call_gemini_vision(_EXPLAIN_SCREEN_PROMPT, image_b64)
+
+            if not analysis or len(analysis) < 20:
+                return "I couldn't read the code or problem from your screen."
+
+            return analysis
+
+        except Exception as e:
+            log.error(f"Explain error: {e}")
+            return "Couldn't analyze the screen. Try again."
 
     # ═══════════════════════════════════════════════════════════
     # 5. EXPLAIN LAST SOLUTION
@@ -497,12 +544,7 @@ class ProblemSolver:
         if not self._last_solution:
             return "I haven't solved any problem yet. Say 'solve this' first."
 
-        prompt = _EXPLAIN_PROMPT.format(solution=self._last_solution[:3000])
-        try:
-            result = self._call_gemini_text(prompt)
-            return result if result else self._cached_explanation()
-        except Exception:
-            return self._cached_explanation()
+        return self._cached_explanation()
 
     def _cached_explanation(self) -> str:
         if self._last_approach:
@@ -543,18 +585,33 @@ class ProblemSolver:
 
     def get_complexity(self) -> str:
         """Return the time/space complexity of the last solution."""
+        if not self._last_solution:
+            return "No solution analyzed yet. Solve a problem first."
         if self._last_complexity:
             return f"The complexity is: {self._last_complexity}"
-        if self._last_code:
-            prompt = (f"What is the time and space complexity of this code? "
-                      f"Answer in one line.\n\n{self._last_code[:2000]}")
-            try:
-                result = self._call_gemini_text(prompt)
-                if result:
-                    return result
-            except Exception:
-                pass
-        return "No solution analyzed yet. Solve a problem first."
+        return "I couldn't determine the complexity of the last solution."
+
+    def show_last_solution(self) -> str:
+        """Return the last solution code from memory."""
+        if not self._last_code:
+            return "I don't have a recent solution to show."
+        return f"Here is the last solution code:\n\n```\n{self._last_code}\n```"
+
+    def explain_last_problem(self) -> str:
+        """Explain the last problem from memory."""
+        if not self._last_solution:
+            return "I haven't solved any problem yet. Say 'solve this' first."
+        
+        parts = []
+        if self._last_problem_title:
+            parts.append(f"Problem: {self._last_problem_title}")
+        if self._last_problem_text:
+            parts.append(f"Summary: {self._last_problem_text}")
+            
+        if parts:
+            return "\n\n".join(parts)
+            
+        return "I remember solving a problem, but I don't have a summary of its text."
 
     # ═══════════════════════════════════════════════════════════
     # INTERNALS
@@ -563,6 +620,14 @@ class ProblemSolver:
     def _process_solution(self, raw: str, problem_id: str, language: str) -> str:
         """Parse the AI response, extract code, copy to clipboard."""
         self._last_solution = raw
+        self._last_timestamp = datetime.now()
+
+        # ── Extract problem title and text ─────────────────────
+        title_match = re.search(r"PROBLEM_TITLE:\s*(.+?)(?:\n|PROBLEM_TEXT)", raw, re.IGNORECASE)
+        self._last_problem_title = title_match.group(1).strip() if title_match else problem_id
+
+        text_match = re.search(r"PROBLEM_TEXT:\s*(.+?)(?:\n|APPROACH)", raw, re.IGNORECASE | re.DOTALL)
+        self._last_problem_text = text_match.group(1).strip() if text_match else ""
 
         # ── Extract approach ──────────────────────────────────
         approach_match = re.search(
@@ -589,7 +654,7 @@ class ProblemSolver:
             in_code = False
             for line in lines:
                 stripped = line.strip()
-                if stripped.startswith(("def ", "class ", "import ", "from ")):
+                if stripped.startswith(("def ", "class ", "import ", "from ", "#include", "using ", "public ", "package ")):
                     in_code = True
                 if in_code:
                     code_lines.append(line)
@@ -649,15 +714,20 @@ class ProblemSolver:
         """Extract code from markdown fenced code blocks."""
         # Match ```python ... ``` or ```java ... ``` etc.
         pattern = r"```(?:\w+)?\s*\n(.*?)```"
-        match = re.search(pattern, text, re.DOTALL)
-        if match:
-            return match.group(1).strip()
+        matches = re.findall(pattern, text, re.DOTALL)
+        if matches:
+            code = max(matches, key=len).strip()
+            # Clean up duplicated boilerplate if Gemini repeats it in a single block
+            code = re.sub(r'(class \w+:\n\s*def \w+\([^)]+\)[^:]*:\n(?:\s*pass\n)?)(?=class \w+:)', '', code)
+            return code
 
         # Try without language tag
         pattern2 = r"```\s*\n(.*?)```"
-        match2 = re.search(pattern2, text, re.DOTALL)
-        if match2:
-            return match2.group(1).strip()
+        matches2 = re.findall(pattern2, text, re.DOTALL)
+        if matches2:
+            code = max(matches2, key=len).strip()
+            code = re.sub(r'(class \w+:\n\s*def \w+\([^)]+\)[^:]*:\n(?:\s*pass\n)?)(?=class \w+:)', '', code)
+            return code
 
         return ""
 

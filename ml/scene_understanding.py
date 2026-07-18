@@ -354,27 +354,10 @@ class SceneUnderstanding:
         """Capture from webcam and describe what JARVIS sees."""
         try:
             import cv2
+            from brain.vision_handler import VisionHandler
 
-            cap = cv2.VideoCapture(0)
-            if not cap.isOpened():
-                return "Camera unavailable, sir."
-
-            cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
-            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
-
-            # Capture a few frames, keep the best
-            best_frame, best_sharp = None, 0
-            for _ in range(15):
-                ret, frame = cap.read()
-                if not ret:
-                    continue
-                gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-                sharp = cv2.Laplacian(gray, cv2.CV_64F).var()
-                if sharp > best_sharp:
-                    best_sharp = sharp
-                    best_frame = frame.copy()
-
-            cap.release()
+            vh = VisionHandler()
+            best_frame, meta = vh.capture_cv2_frame()
 
             if best_frame is None:
                 return "Couldn't capture from camera, sir."

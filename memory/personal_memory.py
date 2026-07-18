@@ -135,9 +135,11 @@ class PersonalMemory:
         (r"my hobby is ([a-z ,]+?)(?:\.|,|$)", "hobby", 1),
         (r"my hobbies are ([a-z ,]+?)(?:\.|,|$)", "hobby", 1),
         (r"i am interested in ([a-z ,]+?)(?:\.|,|$)", "hobby", 1),
+        # ── Dynamic generic facts ─────────────────────────────
+        (r"(?:remember that )?my ([a-z ]+?) is ([a-z0-9 ,]+?)(?:\.|,|$)", "__dynamic__", 0),
         # ── Generic: "remember that I ..." ───────────────────
-        (r"remember that (.+?)(?:\.|$)", "note", 1),
-        (r"note that (.+?)(?:\.|$)", "note", 1),
+        (r"remember that (.+?)(?:\.|$)", "notes", 1),
+        (r"note that (.+?)(?:\.|$)", "notes", 1),
     ]
 
     # ── Recall patterns ────────────────────────────────────────
@@ -149,7 +151,6 @@ class PersonalMemory:
                 "what is my name",
                 "my name",
                 "do you know my name",
-                "who am i",
                 "what am i called",
             ],
             "name",
@@ -240,11 +241,16 @@ class PersonalMemory:
         (
             [
                 "what do you know about me",
+                "what do u know about me",
                 "what do you remember",
+                "what do u remember",
                 "tell me about me",
                 "what have you stored",
+                "what have u stored",
                 "what have you saved",
+                "what have u saved",
                 "what have you learned about me",
+                "what have u learned about me",
             ],
             "__all__",
             "",
@@ -314,33 +320,66 @@ class PersonalMemory:
             "i enrolled",
             "my institution",
         ]
-        if not any(kw in text_lower for kw in learn_keywords):
+        if not any(kw in text_lower for kw in learn_keywords) and not bool(re.search(r"\bmy\s+[a-z ]+\s(?:is|are)\b", text_lower)):
             return ""
+
+        # ── Known acronyms that must stay uppercase ────────────
+        _ACRONYMS = {
+            "nit", "iit", "bits", "vit", "srm", "mit", "nus", "ucla",
+            "iim", "iisc", "nift", "nid", "aiims", "sastra", "srmist",
+            "usa", "uk", "uae", "ai", "ml", "cs", "it", "cse", "ece",
+            "eee", "mba", "btech", "mtech", "phd", "bca", "mca",
+        }
+
+        def _smart_title(s: str) -> str:
+            """Title-case but keep known acronyms uppercase."""
+            return " ".join(
+                w.upper() if w.lower() in _ACRONYMS else w.capitalize()
+                for w in s.split()
+            )
 
         for pattern, key, grp in self.LEARN_PATTERNS:
             m = re.search(pattern, text_lower)
             if m:
-                value = m.group(grp).strip().rstrip(".,!")
-                if not value or len(value) < 2:
-                    continue
+                if key == "__dynamic__":
+                    dyn_key = m.group(1).strip().replace(" ", "_")
+                    value = m.group(2).strip().rstrip(".,!")
+                    if not value or len(value) < 2 or len(dyn_key) < 2:
+                        continue
+                    key = dyn_key
+                else:
+                    value = m.group(grp).strip().rstrip(".,!")
+                    if not value or len(value) < 2:
+                        continue
 
-                # Capitalise properly
-                value = value.title()
+                # Capitalise properly (preserve acronyms)
+                value = _smart_title(value)
+
+                if key == "notes":
+                    if "notes" not in self._facts:
+                        self._facts["notes"] = []
+                    elif not isinstance(self._facts["notes"], list):
+                        self._facts["notes"] = [self._facts["notes"]]
+                    self._facts["notes"].append(value)
+                    self._save()
+                    log.info(f"PersonalMemory: saved note: {value}")
+                    return f"Got it, sir. I'll remember that {value}."
 
                 old = self._facts.get(key)
                 self._facts[key] = value
                 self._save()
 
-                if old and old.lower() != value.lower():
+                if old and str(old).lower() != value.lower():
                     log.info(f"PersonalMemory: updated {key}: {old} → {value}")
                     return (
-                        f"Got it, sir. I've updated your {key} from {old} to {value}."
+                        f"Got it, sir. I've updated your {key.replace('_', ' ')} from {old} to {value}."
                     )
                 else:
                     log.info(f"PersonalMemory: saved {key}={value}")
-                    return f"Got it, sir. I'll remember that your {key} is {value}."
+                    return f"Got it, sir. I'll remember that your {key.replace('_', ' ')} is {value}."
 
         return ""
+
 
     def try_recall(self, text: str) -> str:
         """
@@ -352,11 +391,22 @@ class PersonalMemory:
         for triggers, key, template in self.RECALL_PATTERNS:
             if not any(t in text_lower for t in triggers):
                 continue
+            
+            # TEACH OVERRIDE: If it looks like teaching ("my X is Y", "remember..."),
+            # yield to try_learn. BUT "what is my name" is a QUESTION — don't block it.
+            # Rule: block only when "my <key> is" OR "i am" pattern is present (teaching)
+            _is_teaching = (
+                ("remember" in text_lower and not text_lower.startswith(("what", "tell", "do", "how", "who", "when", "where")))
+                or bool(re.search(r"\bmy\s+\w+\s+is\b", text_lower))
+                or bool(re.search(r"\bi(?:'m| am)\s+\w", text_lower))
+            )
+            if _is_teaching:
+                return ""
 
             if key == "__clear__":
-                self._facts.clear()
-                self._save()
-                return "Done, sir. I've forgotten everything about you."
+                # Do NOT clear memory here — return sentinel to trigger confirmation flow.
+                # Actual clearing happens in main.py after user confirms with 'yes confirm delete'.
+                return "MEMORY_CLEAR_REQUESTED"
 
             if key == "__all__":
                 return self._recall_all()
@@ -369,6 +419,17 @@ class PersonalMemory:
                     f"I don't have your {key} on record yet, sir. "
                     f"Just tell me and I'll remember."
                 )
+
+        # ── Dynamic Recall Fallback ──
+        m_dyn = re.search(r"(?:what|when|where|who) (?:is|are|was|were) my ([a-z ]+?)(?:\?|\.|$)", text_lower)
+        if not m_dyn:
+            m_dyn = re.search(r"(?:what's|when's|where's|who's) my ([a-z ]+?)(?:\?|\.|$)", text_lower)
+            
+        if m_dyn:
+            dyn_key = m_dyn.group(1).strip().replace(" ", "_")
+            if dyn_key in self._facts:
+                val = self._facts[dyn_key]
+                return f"Your {dyn_key.replace('_', ' ')} is {val}, sir."
 
         return ""
 
@@ -405,9 +466,17 @@ class PersonalMemory:
             "note": "Note",
         }
         parts = []
-        for key, label in labels.items():
-            if key in self._facts:
-                parts.append(f"{label}: {self._facts[key]}")
+        for key, val in self._facts.items():
+            if key in labels:
+                parts.append(f"{labels[key]}: {val}")
+            elif key == "notes":
+                if isinstance(val, list):
+                    for n in val:
+                        parts.append(f"Note: {n}")
+                else:
+                    parts.append(f"Note: {val}")
+            else:
+                parts.append(f"{key.replace('_', ' ').title()}: {val}")
         return ". ".join(parts) + "." if parts else ""
 
     # ── Internal ───────────────────────────────────────────────
@@ -428,9 +497,17 @@ class PersonalMemory:
             "profession": "profession",
             "note": "note",
         }
-        for key, label in labels.items():
-            if key in self._facts:
-                parts.append(f"{label}: {self._facts[key]}")
+        for key, val in self._facts.items():
+            if key in labels:
+                parts.append(f"{labels[key]}: {val}")
+            elif key == "notes":
+                if isinstance(val, list):
+                    for n in val:
+                        parts.append(f"note: {n}")
+                else:
+                    parts.append(f"note: {val}")
+            else:
+                parts.append(f"{key.replace('_', ' ')}: {val}")
         if not parts:
             return "I don't know anything about you yet, sir."
         return "Here's what I know about you, sir. " + ". ".join(parts) + "."
@@ -450,6 +527,12 @@ class PersonalMemory:
                 json.dump(self._facts, f, indent=2, ensure_ascii=False)
         except Exception as e:
             log.error(f"PersonalMemory save error: {e}")
+
+    def clear(self):
+        """Clear all stored personal facts."""
+        self._facts.clear()
+        self._save()
+        log.info("PersonalMemory cleared successfully ✅")
 
 
 # ─── Quick test ──────────────────────────────────────────────

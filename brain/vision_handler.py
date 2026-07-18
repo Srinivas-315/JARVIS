@@ -19,6 +19,7 @@ import base64
 import io
 import os
 import threading
+import contextlib
 from pathlib import Path
 
 import requests
@@ -308,18 +309,12 @@ class VisionHandler:
         )
         return None
 
-    def _capture_camera_frame(self) -> Image.Image:
+    @contextlib.contextmanager
+    def acquire_camera(self):
         """
-        Grab the best frame from the real physical webcam.
-
-        - Uses _CAMERA_LOCK so only one capture runs at a time (DSHOW is not
-          thread-safe and crashes if two captures race)
-        - Lock timeout raised to 20 s to survive slow NVIDIA initialisation
-        - MSMF backend tried first — skips NVIDIA virtual camera
-        - After finding the camera, waits for auto-exposure to settle
-        - Collects multiple frames and picks the sharpest (highest Laplacian
-          variance), not just the brightest — handles low-light scenes better
-        - Nothing written to disk — entirely in-RAM PIL pipeline
+        Thread-safe context manager to stream from the real physical webcam.
+        Acquires _CAMERA_LOCK, opens the camera (skipping virtual cams),
+        yields the cv2.VideoCapture object, and ensures it's safely released.
         """
         # ── Acquire lock — wait up to 20 s for any prior capture to finish ──
         if not _CAMERA_LOCK.acquire(timeout=20):
@@ -327,16 +322,15 @@ class VisionHandler:
                 "Camera lock timeout (20 s) — prior capture may have hung. "
                 "Forcing lock reset."
             )
-            # Force-release so future calls aren't permanently blocked
             try:
                 _CAMERA_LOCK.release()
             except RuntimeError:
                 pass
-            return None
-
-        import time
+            yield None
+            return
 
         import cv2
+        import time
 
         cap = None
         try:
@@ -350,50 +344,67 @@ class VisionHandler:
                         cap.grab()
                     ret, frame = cap.read()
                     if ret and frame is not None:
+                        log.info("Cached camera OK")
+                    else:
                         cap.release()
                         cap = None
-                        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                        pil_img = Image.fromarray(frame_rgb)
-                        log.info(
-                            f"Cached camera OK: {pil_img.size[0]}x{pil_img.size[1]} px"
-                        )
-                        return pil_img
+                
                 # Cached camera no longer works — fall through to discovery
-                if cap:
-                    cap.release()
-                    cap = None
-                log.warning("Cached camera failed — re-discovering")
-                self._camera_index = -1
-                self._camera_backend = -1
+                if not cap:
+                    log.warning("Cached camera failed — re-discovering")
+                    self._camera_index = -1
+                    self._camera_backend = -1
 
             # ── Find the real physical webcam (MSMF first, DSHOW last) ────
-            log.info("Opening webcam...")
-            cap = self._open_real_webcam(cv2)
             if cap is None:
-                log.warning(
-                    "No real webcam found. "
-                    "Check: camera not blocked by Teams/Zoom, privacy settings OK, "
-                    "not only an NVIDIA virtual camera present."
-                )
-                return None
+                log.info("Opening webcam...")
+                cap = self._open_real_webcam(cv2)
+                if cap is None:
+                    log.warning(
+                        "No real webcam found. "
+                        "Check: camera not blocked by Teams/Zoom, privacy settings OK, "
+                        "not only an NVIDIA virtual camera present."
+                    )
+            
+            yield cap
+        except ImportError:
+            log.warning("OpenCV not installed — run: pip install opencv-python")
+            yield None
+        except Exception as e:
+            log.error(f"Camera capture error: {e}")
+            yield None
+        finally:
+            if cap:
+                try:
+                    cap.release()
+                except Exception:
+                    pass
+            try:
+                _CAMERA_LOCK.release()
+            except RuntimeError:
+                pass
 
-            # ── Configure resolution ───────────────────────────────────────
-            cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
-            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
-            cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+    def capture_cv2_frame(self) -> tuple:
+        """
+        Grab the best frame from the real physical webcam.
+        Returns: (frame: np.ndarray, meta: dict) or (None, None).
+        meta contains camera_index, backend, resolution.
+        """
+        import time
+        import cv2
+        import numpy as np
+
+        with self.acquire_camera() as cap:
+            if cap is None:
+                return None, None
 
             # ── Auto-exposure settle + buffer drain ───────────────────────
-            # NVIDIA and some UVC cameras need ~1 s for AE to converge.
             log.info("Camera open — letting auto-exposure settle (1 s)...")
             time.sleep(1.0)
             for _ in range(5):
                 cap.grab()  # discard stale buffered frames
 
             # ── Collect frames — pick the SHARPEST one ────────────────────
-            # Sharpness (Laplacian variance) beats brightness for object ID:
-            # a well-lit blurry frame is worse than a sharp dim one.
-            import numpy as np
-
             best_frame = None
             best_sharp = -1.0
             n_collected = 0
@@ -411,8 +422,6 @@ class VisionHandler:
                 n_collected += 1
                 time.sleep(0.06)
 
-            cap.release()
-            cap = None
             log.info(
                 f"Camera released — collected {n_collected} frames, "
                 f"best sharpness={best_sharp:.1f}"
@@ -420,30 +429,33 @@ class VisionHandler:
 
             if best_frame is None:
                 log.warning("No valid frames captured from webcam")
-                return None
+                return None, None
 
-            # ── BGR → RGB → PIL (entirely in RAM) ────────────────────────
-            frame_rgb = cv2.cvtColor(best_frame, cv2.COLOR_BGR2RGB)
-            pil_img = Image.fromarray(frame_rgb)
-            log.info(f"Frame ready: {pil_img.size[0]}x{pil_img.size[1]} px")
-            return pil_img
+            meta = {
+                "camera_index": self._camera_index,
+                "backend": self._camera_backend,
+                "resolution": (
+                    int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)),
+                    int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+                )
+            }
+            return best_frame, meta
 
-        except ImportError:
-            log.warning("OpenCV not installed — run: pip install opencv-python")
+    def _capture_camera_frame(self) -> Image.Image:
+        """
+        Grab the best frame from the real physical webcam as a PIL Image.
+        """
+        import cv2
+
+        frame, meta = self.capture_cv2_frame()
+        if frame is None:
             return None
-        except Exception as e:
-            log.error(f"Camera capture error: {e}")
-            return None
-        finally:
-            if cap:
-                try:
-                    cap.release()
-                except Exception:
-                    pass
-            try:
-                _CAMERA_LOCK.release()
-            except RuntimeError:
-                pass  # already released in timeout path above
+
+        # ── BGR → RGB → PIL (entirely in RAM) ────────────────────────
+        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        pil_img = Image.fromarray(frame_rgb)
+        log.info(f"Frame ready: {pil_img.size[0]}x{pil_img.size[1]} px")
+        return pil_img
 
     def look_at_camera(self, prompt: str = None) -> str:
         """Capture one camera frame and describe what JARVIS sees."""

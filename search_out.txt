@@ -1,0 +1,27 @@
+42:     parse_intent,
+5041:         intent, _ = parse_intent(text)
+5052:         if intent == "open_app":
+5080:         elif intent == "close_app":
+5084:         elif intent == "system_volume":
+5096:         elif intent == "system_brightness":
+5105:         elif intent == "screenshot":
+5109:         elif intent == "shutdown":
+5125:         elif intent == "weather":
+5233:         elif intent == "news":
+5238:         elif intent == "youtube":
+5243:         elif intent == "media":
+5247:         elif intent == "browser_search":
+5252:         elif intent == "google_search":
+5270:         elif intent == "shopping":
+5274:         elif intent == "wikipedia":
+5318:         elif intent == "file_create":
+5322:         elif intent == "file_open":
+5330:             if intent == "timer":
+5353:         elif intent == "vision_screen":
+5364:         elif intent == "send_email":
+5372:         elif intent == "read_email":
+5775:         elif intent == "whatsapp":
+5835:         elif intent == "time_date":
+5891:         elif intent == "reset":
+5895:         elif intent == "stop":
+5905:         elif intent == "joke":

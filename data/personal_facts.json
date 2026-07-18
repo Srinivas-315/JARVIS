@@ -1,6 +1,6 @@
 {
-  "name": "Srinivas",
-  "city": "Delhi",
-  "college": "National Institution Of Technology Delhi",
-  "age": "21"
+  "favourite_colour": "Blue",
+  "favourite_company": "Google",
+  "name": "Test User",
+  "college": "Delhi"
 }

@@ -219,7 +219,7 @@ class PatternAnalyzer:
         """Extract most common phrases from user inputs."""
         phrases = []
         for conv in self.conversations:
-            user_input = conv.get("user_input", "").lower()
+            user_input = str(conv.get("user_input", "")).lower()
             words = user_input.split()
             for i in range(len(words) - 2):
                 phrase = " ".join(words[i : i + 3])
@@ -233,14 +233,14 @@ class PatternAnalyzer:
         """Calculate average response length."""
         if not self.conversations:
             return 0
-        lengths = [len(conv.get("jarvis_response", "")) for conv in self.conversations]
+        lengths = [len(str(conv.get("jarvis_response", ""))) for conv in self.conversations]
         return int(sum(lengths) / len(lengths))
 
     def _sentiment_distribution(self) -> Dict[str, int]:
         """Analyze sentiment distribution."""
         sentiments = {}
         for conv in self.conversations:
-            sentiment = conv.get("sentiment", "neutral")
+            sentiment = str(conv.get("sentiment", "neutral"))
             sentiments[sentiment] = sentiments.get(sentiment, 0) + 1
         return sentiments
 
@@ -253,7 +253,7 @@ class PatternAnalyzer:
         formal_count = 0
 
         for conv in self.conversations:
-            user_input = conv.get("user_input", "").lower()
+            user_input = str(conv.get("user_input", "")).lower()
             casual_count += sum(user_input.count(w) for w in casual_words)
             formal_count += sum(user_input.count(w) for w in formal_words)
 
@@ -273,7 +273,7 @@ class PatternAnalyzer:
         ]
 
         for conv in self.conversations[:100]:  # Sample first 100
-            user_input = conv.get("user_input", "").lower()
+            user_input = str(conv.get("user_input", "")).lower()
             for pattern in greeting_patterns:
                 if re.match(pattern, user_input):
                     greetings.append(user_input.split()[0])
@@ -289,7 +289,7 @@ class PatternAnalyzer:
         ]
 
         for conv in self.conversations[-100:]:  # Sample last 100
-            user_input = conv.get("user_input", "").lower()
+            user_input = str(conv.get("user_input", "")).lower()
             for pattern in sign_off_patterns:
                 if re.search(pattern, user_input):
                     sign_offs.append(user_input)
@@ -300,7 +300,7 @@ class PatternAnalyzer:
         """Categorize types of questions user asks."""
         types = {}
         for conv in self.conversations:
-            user_input = conv.get("user_input", "")
+            user_input = str(conv.get("user_input", ""))
 
             if "?" in user_input:
                 qtype = "question"
@@ -320,10 +320,10 @@ class PatternAnalyzer:
         """Detect user's preferred tone (humorous, serious, helpful, etc)."""
         # Simple heuristic - count exclamation marks, emojis, etc
         exclamations = sum(
-            conv.get("user_input", "").count("!") for conv in self.conversations
+            str(conv.get("user_input", "")).count("!") for conv in self.conversations
         )
         questions = sum(
-            conv.get("user_input", "").count("?") for conv in self.conversations
+            str(conv.get("user_input", "")).count("?") for conv in self.conversations
         )
 
         if exclamations > len(self.conversations) * 0.3:
@@ -527,7 +527,7 @@ class ConversationLearner:
 
         modelfile_content = f"""FROM llama3.2:3b
 
-# JARVIS - Learned from {len(self.db.get_total_conversations())} conversations
+# JARVIS - Learned from {self.db.get_total_conversations()} conversations
 # Updated: {datetime.now().strftime("%Y-%m-%d")}
 
 SYSTEM \"\"\"You are JARVIS - the personal AI assistant.
@@ -575,7 +575,7 @@ PARAMETER num_predict 200
         except Exception as e:
             log.warning(f"Ollama retraining failed: {e}")
 
-    def _record_retraining_event(self, patterns: Dict):
+    def _record_retraining_event(self, patterns):
         """Record that retraining was performed."""
         try:
             DATA_DIR.mkdir(exist_ok=True)
@@ -583,7 +583,7 @@ PARAMETER num_predict 200
             event = {
                 "timestamp": datetime.now().isoformat(),
                 "conversation_count": self.db.get_total_conversations(),
-                "patterns_learned": len(patterns),
+                "patterns_learned": len(patterns) if hasattr(patterns, '__len__') else 0,
                 "intents": self.db.get_intents_distribution(),
             }
 

@@ -145,13 +145,43 @@ class ConversationMemory:
             if match:
                 value = match.group(1).strip()
                 if key == "custom_memory":
-                    # Save custom memories with timestamp
+                    # ── Guard: reject LLM responses being saved as facts ──
+                    # Real user facts are short ("my wifi password is 12345")
+                    # LLM responses are long rambling sentences
+                    if len(value) > 80:
+                        log.debug(f"Memory guard: rejected too-long fact ({len(value)} chars)")
+                        return False
+                    # Reject if it contains multiple sentences (LLM rambling)
+                    if value.count('.') > 2 or value.count('!') > 2:
+                        log.debug("Memory guard: rejected multi-sentence fact")
+                        return False
+                    # Reject LLM-specific phrases that aren't user facts
+                    _llm_phrases = [
+                        "i should flag", "standing by", "as requested",
+                        "sir!", "srinivas!", "pleasure", "similarity:",
+                        "i'll be right here", "let me", "i'd be",
+                        "how about", "shall i", "would you",
+                        "it seems like", "it looks like",
+                    ]
+                    if any(p in value.lower() for p in _llm_phrases):
+                        log.debug(f"Memory guard: rejected LLM-phrase fact")
+                        return False
+
+                    # Save custom memories with timestamp (deduplication)
                     if "custom" not in self._facts:
                         self._facts["custom"] = []
-                    self._facts["custom"].append({
-                        "fact": value,
-                        "date": datetime.now().isoformat()
-                    })
+                    val_clean = value.lower().strip(" .,!?")
+                    is_duplicate = False
+                    for existing in self._facts["custom"]:
+                        if existing.get("fact", "").lower().strip(" .,!?") == val_clean:
+                            is_duplicate = True
+                            existing["date"] = datetime.now().isoformat()
+                            break
+                    if not is_duplicate:
+                        self._facts["custom"].append({
+                            "fact": value,
+                            "date": datetime.now().isoformat()
+                        })
                 else:
                     self._facts[key] = value
 
@@ -187,6 +217,8 @@ class ConversationMemory:
         else:
             self._facts.clear()
         self._save_facts()
+        if not key and _VECTOR_MEMORY:
+            _VECTOR_MEMORY.clear()
         log.info(f"Memory cleared: {'all' if not key else key}")
 
     def _load_facts(self):

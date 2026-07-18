@@ -41,7 +41,7 @@ GOOGLE_AI_STUDIO_KEY = os.getenv("GOOGLE_AI_STUDIO_KEY", "")
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "")
 
 GROQ_ENDPOINT = "https://api.groq.com/openai/v1/chat/completions"
-HUGGINGFACE_ENDPOINT = "https://api-inference.huggingface.co/v1/chat/completions"
+HUGGINGFACE_ENDPOINT = "https://router.huggingface.co/v1/chat/completions"
 OPENROUTER_ENDPOINT = "https://openrouter.ai/api/v1/chat/completions"
 
 # Default timeout (seconds)

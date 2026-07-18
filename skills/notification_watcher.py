@@ -82,8 +82,8 @@ _NORMAL_APPS = {a.lower() for a in APP_PRIORITY["normal"]}
 _SILENT_APPS = {a.lower() for a in APP_PRIORITY["silent"]}
 
 # ─── Rate Limiting ──────────────────────────────────────────────
-_MIN_ANNOUNCE_GAP = 3       # seconds between spoken announcements (was 8 — too slow for chat apps)
-_BURST_WINDOW = 4           # seconds to group burst notifications
+_MIN_ANNOUNCE_GAP = 1.5     # seconds between spoken announcements (was 3 — now faster)
+_BURST_WINDOW = 1.5         # seconds to group burst notifications (was 4 — now faster)
 _MAX_RECENT_HISTORY = 50    # max stored notifications for queries
 
 
@@ -522,8 +522,8 @@ class NotificationWatcher:
                 log.warning(f"DB poll error: {e}")
 
             # Sleep in small increments so stop_event is responsive
-            # 6 × 0.5 = 3 seconds between polls (was 5s — too slow)
-            for _ in range(6):
+            # 2 × 0.5 = 1.0 second between polls (was 3 seconds — now instant)
+            for _ in range(2):
                 if self._stop_event.is_set():
                     return
                 time.sleep(0.5)
@@ -802,12 +802,26 @@ class NotificationWatcher:
         return title, body
 
     def _clean_xml_text(self, text: str) -> str:
-        """Strip XML entities and clean text."""
+        """Strip XML entities, tags, layout hints, and clean text."""
+        if not text:
+            return ""
         text = re.sub(r"&amp;", "&", text)
         text = re.sub(r"&lt;", "<", text)
         text = re.sub(r"&gt;", ">", text)
         text = re.sub(r"&quot;", '"', text)
         text = re.sub(r"&#\d+;", "", text)
+        
+        # Strip raw XML tags
+        text = re.sub(r"<[^>]*>", "", text)
+        
+        # Strip spoken tag representations
+        tag_pattern = r"(?:less\s+than|<|&lt;)\s*\/?[a-zA-Z_][a-zA-Z0-9_\-]*(?:\s+.*?)?\s*(?:greater\s+than|>|&gt;)"
+        text = re.sub(tag_pattern, "", text, flags=re.IGNORECASE)
+        
+        # Strip layout hints
+        text = re.sub(r'hint-\w+="[^"]*"', '', text)
+        text = re.sub(r"hint-\w+='[^']*'", '', text)
+        
         text = re.sub(r"\s+", " ", text).strip()
         return text
 
@@ -828,6 +842,10 @@ class NotificationWatcher:
                             updated rows (same ROWID, new ArrivalTime) are
                             treated as fresh notifications.
         """
+        # Clean title and body to strip any XML remnants or spoken tag artifacts
+        title = self._clean_xml_text(title)
+        body = self._clean_xml_text(body)
+        
         app_lower = app_name.lower().strip()
         now = time.time()
 
@@ -861,10 +879,26 @@ class NotificationWatcher:
             if len(self._recent) > _MAX_RECENT_HISTORY:
                 self._recent = self._recent[-_MAX_RECENT_HISTORY:]
 
-        # ── 3. Check if muted ─────────────────────────────────────
+        # ── 3. Check if muted & Filter Specific Apps ──────────────
         if app_lower in self._muted_apps:
             log.debug(f"🔇 Muted notification from {app_name}")
             return
+
+        # Ignore generic WhatsApp/Phone Link toasts
+        if "whatsapp" in app_lower and ("has a new notification" in title.lower() or "has a new notification" in body.lower()):
+            log.debug(f"🔇 Ignoring generic WhatsApp notification")
+            return
+
+        # Ignore ALL WhatsApp notifications in NotificationWatcher because WhatsAppSkill handles them natively
+        if "whatsapp" in app_lower:
+            log.debug(f"🔇 Ignoring WhatsApp notification in generic watcher (handled by WhatsAppSkill)")
+            return
+
+        # Ignore duplicate Phone Link notifications that mirror WhatsApp
+        if "phone link" in app_lower or "yourphone" in app_lower:
+            if "whatsapp" in title.lower() or "whatsapp" in body.lower():
+                log.debug(f"🔇 Ignoring duplicate Phone Link notification for WhatsApp")
+                return
 
         # ── 4. Determine priority ─────────────────────────────────
         priority = self._get_priority(app_lower)

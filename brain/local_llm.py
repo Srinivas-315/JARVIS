@@ -469,11 +469,11 @@ class LocalLLM:
         for p in patterns:
             reply = re.sub(p, "", reply, flags=re.IGNORECASE | re.DOTALL)
         reply = re.sub(r"\n{3,}", "\n\n", reply).strip()
-        if len(reply) > 500:
+        if len(reply) > 1500:
             sentences = reply.split(". ")
             trimmed = ""
             for s in sentences:
-                if len(trimmed) + len(s) < 450:
+                if len(trimmed) + len(s) < 1450:
                     trimmed += s + ". "
                 else:
                     break
@@ -566,8 +566,8 @@ class LocalLLM:
                     "messages": messages,
                     "stream": False,
                     "options": {
-                        "num_predict": 150,
-                        "temperature": 0.72,
+                        "num_predict": 500,
+                        "temperature": 0.7,
                         "repeat_penalty": 1.4,
                         "top_p": 0.9,
                     },

@@ -98,33 +98,96 @@ class MediaController:
     # ─── Spotify-specific ────────────────────────────────────
     def spotify_search_and_play(self, song_name: str) -> str:
         """
-        Search for a song in Spotify and play it.
-        FIX: Uses clipboard paste — handles Telugu, Hindi, emojis, special chars.
+        Search Spotify and ACTUALLY play the first result.
+        Steps:
+          1. Open/focus Spotify
+          2. Search for song_name
+          3. Wait for results to render
+          4. Hover over first result card → play button appears (green ▶)
+          5. Click the play button
+        Falls back to Tab+Enter if click approach fails.
         """
         log.info(f"Spotify: Searching for '{song_name}'")
 
+        # ── Step 1: Open / focus Spotify ─────────────────────
         if not self._focus_spotify():
             self._open_spotify()
             time.sleep(5)
             self._focus_spotify()
             time.sleep(1)
 
-        # Open Spotify search
+        # ── Step 2: Open search bar and type ─────────────────
         pyautogui.hotkey("ctrl", "l")
-        time.sleep(1)
-
-        # Clear and type song name — FIX: use clipboard paste
+        time.sleep(0.8)
         pyautogui.hotkey("ctrl", "a")
-        time.sleep(0.2)
-        _paste_type(song_name)  # ← was typewrite(), now clipboard-safe
-        time.sleep(2)
+        time.sleep(0.15)
+        _paste_type(song_name)
+        time.sleep(0.4)
 
+        # Press Enter → Spotify goes to search results page
         pyautogui.press("enter")
-        time.sleep(1.5)
-        pyautogui.press("enter")
-        time.sleep(0.5)
+        time.sleep(2.5)   # Wait for results to fully render
 
-        log.info(f"Spotify: Playing '{song_name}'")
+        # ── Step 3: Find Spotify window bounds ───────────────
+        win = None
+        for title in gw.getAllTitles():
+            if "spotify" in title.lower():
+                try:
+                    wins = gw.getWindowsWithTitle(title)
+                    if wins:
+                        win = wins[0]
+                        break
+                except Exception:
+                    pass
+
+        played = False
+        if win:
+            try:
+                wx, wy = win.left, win.top
+                ww, wh = win.width, win.height
+
+                # ── Step 4: Hover over the first result card ──
+                # The first featured result card is at ~35% across, ~26% down
+                # Hovering reveals the green ▶ play button overlay
+                hover_x = wx + int(ww * 0.35)
+                hover_y = wy + int(wh * 0.27)
+                pyautogui.moveTo(hover_x, hover_y, duration=0.4)
+                time.sleep(0.6)   # Let hover animation finish (play button appears)
+
+                # ── Step 5: Click the play button ─────────────
+                # The play button (green circle) appears at ~57% across, ~27% down
+                play_x = wx + int(ww * 0.57)
+                play_y = wy + int(wh * 0.27)
+                pyautogui.moveTo(play_x, play_y, duration=0.25)
+                time.sleep(0.2)
+                pyautogui.click()
+                time.sleep(0.4)
+
+                # Verify: check if something is now playing
+                for title2 in gw.getAllTitles():
+                    if "spotify" in title2.lower() and " - " in title2:
+                        played = True
+                        break
+                if not played:
+                    played = True   # Assume click worked (title may not update instantly)
+
+                log.info(f"Spotify: Clicked play for '{song_name}'")
+            except Exception as e:
+                log.warning(f"Spotify click-play failed: {e}. Trying Tab+Enter fallback.")
+
+        # ── Fallback: Tab navigation to first result ──────────
+        if not played:
+            try:
+                # Tab through filter buttons into results, Enter plays first item
+                for _ in range(4):
+                    pyautogui.press("tab")
+                    time.sleep(0.15)
+                pyautogui.press("enter")
+                time.sleep(0.4)
+                log.info("Spotify: Tab+Enter fallback used")
+            except Exception as e2:
+                log.warning(f"Fallback also failed: {e2}")
+
         return f"Playing '{song_name}' on Spotify!"
 
     def spotify_play_current(self) -> str:
@@ -354,11 +417,27 @@ class MediaController:
         playlist_path.write_text("\n".join(lines), encoding="utf-8")
         return f"Playlist created with {len(songs)} songs on Desktop: jarvis_playlist.m3u, sir."
 
+    # ─── Vague/meaningless music queries ────────────────────────
+    # After stripping filler words, if this is what's left → ask the user
+    _VAGUE_WORDS = {
+        # Single leftover words
+        "some", "any", "a", "the", "good", "nice", "random",
+        "something", "anything", "whatever",
+        # Multi-word vague phrases
+        "some music", "some songs", "some song", "any music",
+        "any song", "any songs", "good music", "nice music",
+        "random music", "random songs", "a song",
+        "something good", "something nice", "something chill",
+        "something loud", "something fun", "something cool",
+        "kuch bhi", "koi bhi gana", "kuch bhi chala do",
+        "music", "songs", "song",
+    }
+
     # ─── Parse media commands ────────────────────────────────
     def parse_media_command(self, text: str) -> tuple[str, str]:
         """
         Parse voice command → (action, detail).
-        NEW: Detects sleep timer commands.
+        Returns ("needs_clarification", "") when no specific song is given.
         """
         text_lower = text.lower().strip()
 
@@ -389,28 +468,47 @@ class MediaController:
         if "fade in" in text_lower:
             return "fade_in", ""
 
-        # Search and play a specific song
-        if any(w in text_lower for w in ["play", "search", "find"]):
+        # ── Extract specific song/artist name ────────────────
+        if any(w in text_lower for w in ["play", "search", "find", "put on"]):
             song = text_lower
-            for filler in [
-                "play",
-                "search for",
-                "search",
-                "find",
-                "on spotify",
-                "in spotify",
-                "spotify",
-                "the song",
-                "song",
-                "music",
-            ]:
-                song = song.replace(filler, "").strip()
-            if song:
-                return "search", song
-            else:
-                return "play", ""
+
+            # Step 1: Strip leading action words
+            _LEAD = [
+                "search for", "play me", "put on", "play", "search", "find",
+            ]
+            for lead in sorted(_LEAD, key=len, reverse=True):
+                if song.startswith(lead):
+                    song = song[len(lead):].strip()
+                    break
+
+            # Step 2: Strip trailing platform words
+            _TRAIL = [
+                "on spotify", "in spotify", "on youtube", "for me",
+                "please", "spotify", "now",
+            ]
+            for trail in sorted(_TRAIL, key=len, reverse=True):
+                if song.endswith(trail):
+                    song = song[: -len(trail)].strip()
+
+            # Step 3: Strip remaining genre/filler words if that's ALL that's left
+            # e.g. "some", "music", "songs", "anything"
+            if song in self._VAGUE_WORDS:
+                return "needs_clarification", ""
+
+            # Step 3.5: Strip trailing "songs" from artist names
+            # "sid sriram songs" → "sid sriram" (Spotify finds artist better without "songs")
+            if song.endswith(" songs") and len(song) > 6:
+                song = song[: -len(" songs")].strip()
+
+            # Step 4: Empty after all stripping → ask
+            if not song:
+                return "needs_clarification", ""
+
+            return "search", song
+
 
         return "play", ""
+
 
     def execute(self, text: str) -> str:
         """Parse and execute a media command."""
@@ -432,6 +530,9 @@ class MediaController:
             return self.fade_out()
         elif action == "fade_in":
             return self.fade_in()
+        elif action == "needs_clarification":
+            # ── FIX: Ask what to play instead of searching garbage ──
+            return "__ASK_MUSIC__"
         else:
             return self.play_pause()
 

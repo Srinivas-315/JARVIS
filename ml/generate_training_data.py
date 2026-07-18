@@ -61,6 +61,52 @@ EXTRA_EXAMPLES = {
         "drop a message to {name}", "ping {name} on whatsapp",
         "forward this to {name}", "let {name} know {msg}",
     ],
+    "whatsapp_status": [
+        "is {name} online on whatsapp", "check status of {name} on whatsapp",
+        "last seen of {name}", "when was {name} online", "check {name} status",
+        "is {name} active", "is {name} online",
+    ],
+    "whatsapp_schedule": [
+        "schedule whatsapp message to {name} {msg} at {time}",
+        "schedule message to {name} saying {msg} at {time}",
+        "schedule {msg} to {name} at {time}",
+        "send {msg} to {name} at {time} on whatsapp",
+    ],
+    "whatsapp_unread_count": [
+        "check unread whatsapp messages", "do i have any new messages on whatsapp",
+        "how many unread messages on whatsapp", "any unread whatsapp chats",
+        "check my unread messages", "do i have unread texts", "whatsapp notifications",
+    ],
+    "whatsapp_emoji": [
+        "send {emoji} emoji to {name}", "send {emoji} to {name} on whatsapp",
+        "{emoji} emoji to {name}", "whatsapp {name} {emoji} emoji",
+    ],
+    "whatsapp_screenshot": [
+        "send screenshot to {name} on whatsapp", "share my screen capture with {name}",
+        "send a screenshot to {name}", "whatsapp screenshot to {name}",
+    ],
+    "whatsapp_voice_note": [
+        "send a voice note to {name}", "record a voice note for {name} on whatsapp",
+        "send 10 second voice note to {name}", "whatsapp voice note to {name}",
+    ],
+    "whatsapp_undo": [
+        "undo my last whatsapp message", "delete the last message on whatsapp",
+        "unsend message in whatsapp", "delete message in whatsapp",
+    ],
+    "whatsapp_group": [
+        "send message to group {group} saying {msg}",
+        "post {msg} to {group} group on whatsapp",
+        "whatsapp group {group} we are starting",
+    ],
+    "whatsapp_bulk": [
+        "send {msg} to {name} and {name} on whatsapp",
+        "message {name} and {name} saying {msg}",
+        "send bulk message to {name} and {name}",
+    ],
+    "whatsapp_translate": [
+        "translate {msg} to {lang} and send to {name} on whatsapp",
+        "send {msg} translated to {lang} to {name}",
+    ],
     "play_music": [
         "play {song}", "play some music", "play songs",
         "put on some {genre} music", "play {artist}",
@@ -206,6 +252,9 @@ MESSAGES = ["good morning", "i'll be late", "coming in 10 minutes",
             "call me", "how are you", "happy birthday"]
 TASKS = ["call mom", "buy groceries", "submit assignment", "exercise",
          "drink water", "take medicine", "check email"]
+EMOJIS = ["heart", "thumbs up", "fire", "smile", "laugh", "clap", "ok"]
+GROUPS = ["family", "friends", "class", "office", "team", "colleagues"]
+LANGUAGES = ["hindi", "telugu", "tamil", "spanish", "french", "german", "kannada"]
 
 
 def fill_template(template: str) -> str:
@@ -215,6 +264,12 @@ def fill_template(template: str) -> str:
         result = result.replace("{app}", random.choice(APPS))
     if "{name}" in result:
         result = result.replace("{name}", random.choice(NAMES))
+    if "{emoji}" in result:
+        result = result.replace("{emoji}", random.choice(EMOJIS))
+    if "{group}" in result:
+        result = result.replace("{group}", random.choice(GROUPS))
+    if "{lang}" in result:
+        result = result.replace("{lang}", random.choice(LANGUAGES))
     if "{song}" in result:
         result = result.replace("{song}", random.choice(SONGS))
     if "{artist}" in result:

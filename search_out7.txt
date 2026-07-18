@@ -1,0 +1,4 @@
+270:                 elif "ram" in info_type or "memory" in info_type:
+417:             if action == "memory":
+421:                     # Use the JARVIS-wide nuclear clear (all 4 memory stores)
+426:                 mem = getattr(mem, 'memory', None) if mem else None

@@ -198,6 +198,53 @@ class GeminiHandler:
             "✅ Memory system linked to GeminiHandler — context will be injected in every prompt."
         )
 
+    def set_calendar(self, calendar_instance) -> None:
+        self._calendar = calendar_instance
+
+    def set_reminder(self, reminder_instance) -> None:
+        self._reminder = reminder_instance
+
+    def set_emotion_engine(self, emotion_engine) -> None:
+        self._emotion_engine = emotion_engine
+
+    def set_rag_engine(self, rag_engine) -> None:
+        self._rag_engine = rag_engine
+
+    def _build_unified_context(self) -> str:
+        """
+        Builds the unified context (Memory, Calendar, Reminders, Emotion, etc.)
+        used by ProactiveAssistant and other modules.
+        """
+        context = []
+        if getattr(self, '_mem_sys', None):
+            try:
+                facts = self._mem_sys.get_personal_facts_summary()
+                if facts:
+                    context.append(f"[MEMORY]\n{facts}")
+            except Exception: pass
+            
+        if getattr(self, '_calendar', None):
+            try:
+                cal = self._calendar.get_today()
+                if "Nothing scheduled" not in cal:
+                    context.append(f"[CALENDAR]\n{cal}")
+            except Exception: pass
+            
+        if getattr(self, '_reminder', None):
+            try:
+                rem = self._reminder.list_reminders()
+                if "no upcoming reminders" not in rem:
+                    context.append(f"[REMINDERS]\n{rem}")
+            except Exception: pass
+            
+        if getattr(self, '_emotion_engine', None):
+            try:
+                emo = self._emotion_engine.get_state()
+                context.append(f"[EMOTION STATE]\n{emo}")
+            except Exception: pass
+            
+        return "\n\n".join(context)
+
     def set_personality(self, mode: str) -> str:
         """
         Switch JARVIS personality on the fly.
@@ -249,6 +296,41 @@ class GeminiHandler:
                     base += f"\n\n{facts_summary}"
             except Exception:
                 pass
+
+        # ── Inject Personal Assistant Schedule ───────────────
+        try:
+            from datetime import datetime
+            current_time = datetime.now().strftime("%Y-%m-%d %I:%M %p (%A)")
+            base += f"\n\n[SYSTEM TIME]\nCurrent Datetime: {current_time}\n"
+            
+            cal_today = ""
+            if getattr(self, '_calendar', None) is not None:
+                raw_cal = self._calendar.get_today()
+                if "Nothing scheduled" not in raw_cal:
+                    cal_lines = raw_cal.split('\n')
+                    cal_today = '\n'.join(cal_lines[:6]) # Title + max 5 items
+                    if len(cal_lines) > 6:
+                        cal_today += '\n  • ... (and more)'
+
+            reminders = ""
+            if getattr(self, '_reminder', None) is not None:
+                raw_rem = self._reminder.list_reminders()
+                if "no upcoming reminders" not in raw_rem:
+                    rem_lines = raw_rem.split('\n')
+                    reminders = '\n'.join(rem_lines[:6]) # Title + max 5 items
+                    if len(rem_lines) > 6:
+                        reminders += '\n• ... (and more)'
+
+            if cal_today or reminders:
+                base += "\n=== PERSONAL ASSISTANT SCHEDULE ==="
+                if cal_today:
+                    base += f"\n[CALENDAR]\n{cal_today}"
+                if reminders:
+                    base += f"\n[REMINDERS]\n{reminders}"
+                base += "\n"
+        except Exception as e:
+            from utils.logger import log
+            log.error(f"Error building Personal Assistant Layer context: {e}")
 
         return base
 

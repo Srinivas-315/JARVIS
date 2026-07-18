@@ -17,6 +17,7 @@ numpy
 
 # Voice Output
 pyttsx3
+elevenlabs
 
 # Wake Word (free, no signup needed)
 openwakeword
@@ -49,6 +50,11 @@ winsdk  # Windows notification listener (event-driven fallback)
 
 # Memory
 # sqlite3 is built-in to Python
+
+# RAG Pipeline (Knowledge Base)
+chromadb
+PyPDF2
+sentence-transformers  # For embedding documents
 
 # Image & Vision
 Pillow

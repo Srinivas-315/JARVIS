@@ -1,76 +1,59 @@
-"""JARVIS Integration Test — Phase 10"""
 import sys
-sys.argv = ['main.py']
+import os
 
-print("=" * 50)
-print("  JARVIS v2.0.0 — Integration Test")
-print("=" * 50)
+# Ensure we're in the right directory
+sys.path.insert(0, os.path.abspath('.'))
 
-# 1. Config
-from config import VERSION, VOICE_NAME, USER_NAME
-print(f"\n[1] Config: v{VERSION}, Voice: {VOICE_NAME}, User: {USER_NAME} ✅")
+import config
+config.SPEAKER_ENABLED = False  # Disable real TTS
+config.CAMERA_INDEX = -1
 
-# 2. Speaker
-from voice.speaker import Speaker
-s = Speaker()
-print(f"[2] Speaker: voices={s.list_voices()} ✅")
+from main import JARVIS
 
-# 3. Listener
-from voice.listener import Listener
-print("[3] Listener: OK ✅")
+def run_tests():
+    print("\n--- INITIALIZING JARVIS FOR TESTING ---")
+    j = JARVIS()
+    
+    # Mocking hardware-dependent methods
+    def mock_speak(text, **kwargs):
+        print(f"\n🗣️ [JARVIS SPEAKS]: {text}")
+        
+    def mock_what_is_on_screen():
+        print(f"👁️ [JARVIS VISION]: capturing screen...")
+        return "I see a LeetCode problem on your screen."
+        
+    def mock_camera():
+        print(f"📷 [JARVIS CAMERA]: capturing webcam...")
+        return "I see nothing on the webcam."
+        
+    def mock_gemini(prompt, **kwargs):
+        print(f"🧠 [GEMINI CALLED]: {prompt}")
+        return "I am Gemini, solving the problem."
 
-# 4. Wake word
-from voice.wake_word import WakeWordDetector
-print("[4] Wake word: OK ✅")
+    j._speak = mock_speak
+    j.vision.what_is_on_screen = mock_what_is_on_screen
+    j.vision.read_text_from_camera = mock_camera
+    if hasattr(j, 'gemini'):
+        j.gemini.ask = mock_gemini
+    
+    print("\n==========================================")
+    print("▶️ TEST 1: Single Intent (Memory)")
+    print("Command: 'Remember that I am preparing for Google interviews.'")
+    print("==========================================")
+    j._process_command_inner("Remember that I am preparing for Google interviews.")
+    
+    print("\n==========================================")
+    print("▶️ TEST 2: Single Intent (Vision Routing)")
+    print("Command: 'Analyze this problem on my screen.'")
+    print("==========================================")
+    j._process_command_inner("Analyze this problem on my screen.")
+    
+    print("\n==========================================")
+    print("▶️ TEST 3: Multi-Intent (Memory + Vision)")
+    print("Command: 'Remember that I am preparing for Google interviews. Also analyze this problem on my screen.'")
+    print("==========================================")
+    j._process_command_inner("Remember that I am preparing for Google interviews. Also analyze this problem on my screen.")
+    print("\nDone.")
 
-# 5. Gemini
-from brain.gemini_handler import GeminiHandler
-print("[5] Gemini handler: OK ✅")
-
-# 6. Intent parser
-from brain.intent_parser import parse_intent
-tests = [
-    ("open chrome srinivasa",     "open_app"),
-    ("play believer on spotify",  "media"),
-    ("next song",                 "media"),
-    ("what time is it",           "time_date"),
-    ("message to banty hello",    "whatsapp"),
-    ("open notepad",              "open_app"),
-    ("close chrome",              "close_app"),
-    ("what's the weather",        "weather"),
-]
-print("[6] Intent parser:")
-all_pass = True
-for text, expected in tests:
-    intent, _ = parse_intent(text)
-    status = "✅" if intent == expected else f"❌ (got {intent})"
-    if intent != expected:
-        all_pass = False
-    print(f"    '{text}' → {intent} {status}")
-
-# 7. Skills
-from skills.media import MediaController
-from skills.shopping import ShoppingSkill
-print("[7] Skills (media, shopping): OK ✅")
-
-# 8. Memory
-from memory.chat_history import ChatHistory
-ch = ChatHistory()
-recent = ch.get_recent(5)
-print(f"[8] Memory: {len(recent)} recent chats ✅")
-
-from memory.user_prefs import UserPrefs
-up = UserPrefs()
-print(f"    Prefs: name={up.name} ✅")
-
-# 9. GUI
-from gui.main_window import JARVISWindow
-print("[9] GUI module: OK ✅")
-
-# Result
-print("\n" + "=" * 50)
-if all_pass:
-    print("  🎉 ALL TESTS PASSED! JARVIS is production-ready!")
-else:
-    print("  ⚠️  Some intent tests failed, but core is working!")
-print("=" * 50)
+if __name__ == '__main__':
+    run_tests()

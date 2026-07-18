@@ -349,6 +349,12 @@ def parse_intent(text: str) -> tuple[str, str]:
     if ml_conf >= threshold and ml_intent != "unknown":
         log.info(f"ML predicted: '{ml_intent}' ({ml_conf:.0%}, threshold={threshold})")
 
+    # ── PRIORITY: WhatsApp Unread (BEFORE anything else) ─────────
+    _wa_unread = ["check unread", "any unread", "unread", "any messages", "new messages", "what did i miss"]
+    if any(w in text_lower for w in _wa_unread):
+        log.info("Intent detected: 'check_unread' (priority)")
+        return "check_unread", text
+
     # ── PRIORITY: Email / WhatsApp (BEFORE close_app eats contact names) ──
     # "send email to mom" — 'mom' would trigger close_app without this guard
     _email_prefixes = [
@@ -582,24 +588,49 @@ def extract_app_name(text: str) -> str:
 
 
 def extract_search_query(text: str) -> str:
-    """Extract search query from 'search for X' or 'google X'."""
-    text_lower = text.lower()
-    triggers = [
-        "search for",
-        "google",
-        "search online",
-        "look up",
-        "find online",
-        "search",
-        "youtube",
-        "play",
+    """
+    Extract the meaningful search query from a command.
+    Strips trigger/filler words from the whole string.
+
+    Examples:
+        'play arijit singh on youtube' → 'arijit singh'
+        'search for python tutorials' → 'python tutorials'
+        'google cricket score' → 'cricket score'
+        'open youtube' → ''  (nothing left = ask user)
+    """
+    query = text.lower().strip()
+
+    # Strip leading trigger words (order matters — longest first)
+    _LEAD_TRIGGERS = [
+        "search for", "search online for", "look up",
+        "find online", "google search for", "google",
+        "find", "search", "play", "watch", "open", "youtube",
     ]
-    for trigger in sorted(triggers, key=len, reverse=True):  # longest first
-        if trigger in text_lower:
-            parts = text_lower.split(trigger, 1)
-            if len(parts) > 1:
-                return parts[1].strip()
-    return text
+    for trigger in sorted(_LEAD_TRIGGERS, key=len, reverse=True):
+        if query.startswith(trigger):
+            query = query[len(trigger):].strip()
+            break
+
+    # Strip trailing platform words
+    _TRAIL_WORDS = [
+        "on youtube", "on spotify", "on chrome", "in browser",
+        "on google", "in chrome", "online", "youtube", "spotify",
+    ]
+    for trail in sorted(_TRAIL_WORDS, key=len, reverse=True):
+        if query.endswith(trail):
+            query = query[: -len(trail)].strip()
+
+    # Strip ONLY fully vague words — not genre names like "lofi music", "rock music"
+    _FULLY_VAGUE = {
+        "some", "something", "any", "anything",
+        "some music", "some songs", "random", "random music",
+        "good music", "nice music", "music", "songs", "a song",
+    }
+    if query in _FULLY_VAGUE or not query:
+        return ""
+
+    return query
+
 
 
 def extract_name_and_message(text: str) -> tuple[str, str]:

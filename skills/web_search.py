@@ -81,7 +81,35 @@ class WebSearch:
             return self._cache[cache_key]
 
         # Route to best source based on query type
-        query_lower = query.lower()
+        query_lower = query.lower().strip()
+
+        # --- 0. Query Rewriting & Intent Extraction ---
+        prog_langs = {"python", "java", "c++", "c#", "go", "rust", "ruby", "php", "javascript"}
+        
+        # Strip common prefixes to find the core entity
+        core_entity = query_lower
+        for p in ["what is a ", "what is an ", "what is ", "what are ", "who is ", "who was ", "who founded ", "who created ", "tell me about ", "define "]:
+            if core_entity.startswith(p):
+                core_entity = core_entity[len(p):].strip()
+                break
+
+        # If it's a known language, append "programming language"
+        is_prog_context = any(w in query_lower for w in ["language", "programming", "code", "coding", "software"])
+        if core_entity in prog_langs or (is_prog_context and core_entity.split()[0] in prog_langs):
+            if "programming" not in query_lower and "language" not in query_lower:
+                query = query + " programming language"
+                query_lower = query.lower()
+                core_entity = core_entity + " programming language"
+
+        # Handle QA (Who founded / created)
+        qa_field = None
+        if "who founded" in query_lower or "who created" in query_lower or "founder of" in query_lower or "creator of" in query_lower:
+            qa_field = "founder"
+
+        if qa_field:
+            result = self._duckduckgo(core_entity, qa_field=qa_field)
+            if result:
+                return self._cache_and_return(cache_key, result)
 
         # 1. Live data — crypto/stock prices
         if any(
@@ -172,7 +200,7 @@ class WebSearch:
     # SEARCH SOURCES
     # ═══════════════════════════════════════════════════════════
 
-    def _duckduckgo(self, query: str) -> str:
+    def _duckduckgo(self, query: str, qa_field: str = None) -> str:
         """Fetch DuckDuckGo Instant Answer (no API key, fast)."""
         try:
             url = DDG_API.format(query=urllib.parse.quote(query))
@@ -181,6 +209,18 @@ class WebSearch:
                 data = json.loads(resp.read().decode("utf-8"))
 
             # Try different result types
+            
+            # QA Infobox Extraction
+            if qa_field and data.get("Infobox") and data["Infobox"].get("content"):
+                for item in data["Infobox"]["content"]:
+                    label = item.get("label", "").lower()
+                    if qa_field == "founder" and any(k in label for k in ["founder", "creator", "author", "developer", "inventor"]):
+                        val = item.get("value")
+                        if val:
+                            if isinstance(val, dict):
+                                val = val.get("id", str(val))
+                            return f"{val}"
+
             # Type A = article (best)
             if data.get("AbstractText"):
                 text = data["AbstractText"]

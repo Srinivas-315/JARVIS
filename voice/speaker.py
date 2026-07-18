@@ -23,8 +23,8 @@ from utils.helpers import clean_text, speak_friendly
 from utils.logger import log
 
 # ── Max sentences JARVIS speaks aloud (rest shown in GUI only) ─
-MAX_SPEAK_SENTENCES = 3  # Speak only first 3 sentences
-MAX_SPEAK_CHARS = 220  # Hard cap — keeps responses snappy
+MAX_SPEAK_SENTENCES = 20  # Speak up to 20 sentences
+MAX_SPEAK_CHARS = 3000  # Hard cap — keeps responses complete
 
 # ── Voice config path ─────────────────────────────────────────
 _ROOT = Path(__file__).parent.parent
@@ -39,7 +39,7 @@ KOKORO_VOICE_ALIASES = {
     "bm_lewis": "bm_lewis",
     "lewis": "bm_lewis",
     "am_adam": "am_adam",
-    "adam": "am_adam",
+    "adam": "elevenlabs:pNInz6obpgq9hmKyo7Gy",  # Map generic "adam" to ElevenLabs premium voice
     "am_michael": "am_michael",
     "michael": "am_michael",
     "af_bella": "af_bella",
@@ -76,6 +76,17 @@ KOKORO_VOICE_ALIASES = {
     "edge_sonia": "edge:en-GB-SoniaNeural",
     "edge sonia": "edge:en-GB-SoniaNeural",
     "jarvis": "edge:en-US-GuyNeural",  # "change voice to jarvis" = Guy
+    # ── ElevenLabs Voices ──
+    "elevenlabs": "elevenlabs",
+    "eleven": "elevenlabs",
+    "eleven_adam": "elevenlabs:pNInz6obpgDQGcFmaJgB",
+    "eleven_bella": "elevenlabs:hpp4J3VqNfWAUOO0d1Us",
+    "eleven_sarah": "elevenlabs:EXAVITQu4vr4xnSDxMaL",
+    "eleven_george": "elevenlabs:JBFqnCBsd6RMkjVDRZzb",
+    "eleven_charlie": "elevenlabs:IKne3meq5aSn9XLyUdCD",
+    "eleven_harry": "elevenlabs:SOYHLrjzK2X1ezoPC6cr",
+    "eleven_liam": "elevenlabs:TX3LPaxmHKxFdv7VOQHJ",
+    "adam": "elevenlabs:pNInz6obpgDQGcFmaJgB",
 }
 
 # ── pyttsx3 fallback voice map ────────────────────────────────
@@ -99,6 +110,7 @@ class Speaker:
         self._speaking = False
         self._interrupted = False
         self._lock = threading.Lock()
+        self._speaker_muted = False
 
         # pyttsx3 fallback engine
         self._engine = None
@@ -208,6 +220,9 @@ class Speaker:
 
     def speak(self, text: str):
         """Speak a text string out loud."""
+        # Guard: some skills return bool/None — coerce to string
+        if not isinstance(text, str):
+            text = str(text) if text is not None else ""
         if not text or not text.strip():
             return
 
@@ -222,13 +237,18 @@ class Speaker:
         except UnicodeEncodeError:
             print(f"\n\033[94mJARVIS:\033[0m {clean}\n")
 
+        if getattr(self, "_speaker_muted", False):
+            return
+
         # Trim for speaking — keeps audio short and snappy
         speak_text = self._trim_for_speaking(clean)
 
         self._interrupted = False
 
         # Route to correct TTS engine based on current voice
-        if self._kokoro_voice.startswith("edge:"):
+        if self._kokoro_voice.startswith("elevenlabs"):
+            self._say_elevenlabs(speak_text)
+        elif self._kokoro_voice.startswith("edge:"):
             # Edge TTS English voice selected
             self._say_edge_english(speak_text)
         elif self.language_handler and not self.language_handler.is_english:
@@ -476,8 +496,108 @@ class Speaker:
             log.warning("edge-tts not installed — falling back to Kokoro. Run: pip install edge-tts")
             self._say_kokoro(text)
         except Exception as e:
-            log.error(f"Edge TTS English error: {e}")
+            # Network error (offline) — auto-reset voice to local so we stop spamming Edge errors
+            err_str = str(e).lower()
+            is_network_err = any(x in err_str for x in [
+                "getaddrinfo", "connecttimeout", "connectionerror",
+                "nameresolution", "ssl", "cannot connect", "network"
+            ])
+            if is_network_err:
+                log.warning("Edge TTS offline — auto-switching to local voice (Kokoro/pyttsx3)")
+                # Reset to local voice so we don't keep hitting the network
+                self._kokoro_voice = "bm_george" if self._use_kokoro else "david"
+                self._save_config()
+            else:
+                log.error(f"Edge TTS English error: {e}")
+            # Always fall back to local TTS — use pyttsx3 since Kokoro can't handle Edge voice names
+            if self._use_kokoro:
+                self._say_kokoro(text)
+            else:
+                self._say_pyttsx3(text)
+        finally:
+            with self._lock:
+                self._speaking = False
+
+    def _say_elevenlabs(self, text: str):
+        """Speak using ElevenLabs API with file caching."""
+        if not getattr(config, "ELEVENLABS_API_KEY", ""):
+            log.warning("ElevenLabs API key is missing. Falling back to Kokoro.")
+            # Fall back to George
+            self._kokoro_voice = "bm_george"
             self._say_kokoro(text)
+            return
+
+        with self._lock:
+            self._speaking = True
+
+        try:
+            out_dir = _ROOT / "data" / "voice_output"
+            out_dir.mkdir(parents=True, exist_ok=True)
+
+            # Extract voice_id
+            voice_id = getattr(config, "ELEVENLABS_VOICE_ID", "21m00Tcm4TlvDq8ikWAM")
+            if ":" in self._kokoro_voice:
+                voice_id = self._kokoro_voice.split(":", 1)[-1]
+
+            # Cache check
+            cache_key = f"eleven_{voice_id}_{hash(text) % 999999}"
+            if cache_key in self._wav_cache:
+                cached_path = self._wav_cache[cache_key]
+                if Path(cached_path).exists():
+                    log.info("Playing cached ElevenLabs audio (instant!)")
+                    if not self._interrupted:
+                        self._play_mp3(cached_path)
+                    return
+
+            out_path = str(out_dir / f"eleven_{voice_id}_{abs(hash(text)) % 999999:06d}.mp3")
+
+            # API Call
+            import requests
+            url = f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}"
+            headers = {
+                "xi-api-key": config.ELEVENLABS_API_KEY,
+                "Content-Type": "application/json",
+                "accept": "audio/mpeg"
+            }
+            payload = {
+                "text": text,
+                "model_id": "eleven_multilingual_v2",
+                "voice_settings": {
+                    "stability": 0.5,
+                    "similarity_boost": 0.75
+                }
+            }
+            resp = requests.post(url, json=payload, headers=headers, timeout=20)
+            if resp.status_code == 200:
+                with open(out_path, "wb") as f:
+                    f.write(resp.content)
+
+                # Cache file
+                if len(self._wav_cache) >= self._cache_max:
+                    oldest = next(iter(self._wav_cache))
+                    del self._wav_cache[oldest]
+                self._wav_cache[cache_key] = out_path
+
+                if not self._interrupted:
+                    self._play_mp3(out_path)
+            else:
+                log.error(f"ElevenLabs API error: {resp.status_code} - {resp.text}")
+                log.warning("Falling back to Kokoro.")
+                orig_voice = self._kokoro_voice
+                self._kokoro_voice = "bm_george"
+                try:
+                    self._say_kokoro(text)
+                finally:
+                    self._kokoro_voice = orig_voice
+
+        except Exception as e:
+            log.error(f"ElevenLabs speak error: {e}")
+            orig_voice = self._kokoro_voice
+            self._kokoro_voice = "bm_george"
+            try:
+                self._say_kokoro(text)
+            finally:
+                self._kokoro_voice = orig_voice
         finally:
             with self._lock:
                 self._speaking = False
@@ -652,6 +772,13 @@ class Speaker:
     # VOICE CHANGE (called from main.py by voice command)
     # ═══════════════════════════════════════════════════════════
 
+    def toggle_mute(self):
+        """Toggle the speaker output on or off."""
+        self._speaker_muted = not getattr(self, "_speaker_muted", False)
+        if self._speaker_muted:
+            self.stop()
+        return self._speaker_muted
+
     def set_voice(self, name: str) -> str:
         """
         Change JARVIS voice by name.
@@ -659,41 +786,43 @@ class Speaker:
         """
         name_lower = name.lower().strip()
 
-        if self._use_kokoro:
-            kokoro_name = KOKORO_VOICE_ALIASES.get(name_lower)
-            if not kokoro_name:
-                available = "george, adam, michael, lewis, bella, nicole, sarah, sky, emma, isabella"
-                return f"I don't know that voice. Try: {available}"
-
+        alias_target = KOKORO_VOICE_ALIASES.get(name_lower)
+        if alias_target:
             old_voice = self._kokoro_voice
-            self._kokoro_voice = kokoro_name
+            self._kokoro_voice = alias_target
 
             # 1. Clear in-memory cache dict
             self._wav_cache.clear()
 
-            # 2. Delete ALL old WAV files from disk so stale audio can't replay
+            # 2. Delete old voice cache files from disk
             try:
                 out_dir = _ROOT / "data" / "voice_output"
                 for f in out_dir.glob("jarvis_*.wav"):
-                    try:
-                        f.unlink()
-                    except Exception:
-                        pass
-                log.info(f"Cleared voice WAV cache from disk")
+                    try: f.unlink()
+                    except: pass
+                for f in out_dir.glob("edge_*.mp3"):
+                    try: f.unlink()
+                    except: pass
+                for f in out_dir.glob("eleven_*.mp3"):
+                    try: f.unlink()
+                    except: pass
+                log.info(f"Cleared voice cache files from disk")
             except Exception as e:
-                log.warning(f"Could not clear WAV cache files: {e}")
+                log.warning(f"Could not clear cache files: {e}")
 
             self._save_config()
-            log.info(f"Voice changed: {old_voice} → {kokoro_name}")
-            return f"Switched to {kokoro_name}. How does this sound?"
+            log.info(f"Voice changed: {old_voice} → {alias_target}")
+            return f"Switched to {name.title()}. How does this sound?"
 
-        else:
-            idx = PYTTSX3_MAP.get(name_lower)
-            if idx is None:
-                return f"Unknown voice '{name}'. Say: David or Zira"
-            self._voice_index = idx
-            self._save_config()
-            return f"Voice changed to {name}!"
+        # Fallback to pyttsx3
+        idx = PYTTSX3_MAP.get(name_lower)
+        if idx is None:
+            available = ", ".join(list(KOKORO_VOICE_ALIASES.keys())[:12])
+            return f"I don't know that voice. Try: {available}, or David/Zira"
+            
+        self._voice_index = idx
+        self._save_config()
+        return f"Voice changed to {name.title()}!"
 
     def find_voice_in_text(self, text: str) -> str | None:
         """
@@ -713,15 +842,19 @@ class Speaker:
                 return alias
         return None
 
-    def set_rate(self, rate: int):
+    def set_rate(self, rate: int, save_to_disk: bool = True):
         """Set speaking speed."""
         self._rate = max(100, min(300, rate))
         if self._use_kokoro:
             # Convert pyttsx3 rate to Kokoro speed
             # pyttsx3 default ~150, Kokoro default 1.0
             self._kokoro_speed = round(rate / 150.0, 2)
+            if save_to_disk:
+                self._save_config()
+        elif save_to_disk:
+            # For pyttsx3 or edge engine saving configuration if required
             self._save_config()
-        log.info(f"Rate set: {self._rate} | Kokoro speed: {self._kokoro_speed}")
+        log.info(f"Rate set: {self._rate} | Kokoro speed: {self._kokoro_speed} (saved={save_to_disk})")
 
     def set_volume(self, volume: float):
         self._volume = max(0.0, min(1.0, volume))

@@ -286,6 +286,20 @@ class ConversationDatabase:
 
     # ── Maintenance ──────────────────────────────────────────────
 
+    def clear_all(self):
+        """Delete all records from all tables."""
+        try:
+            with self._lock:
+                self._conn.execute("DELETE FROM conversations")
+                self._conn.execute("DELETE FROM user_facts")
+                self._conn.execute("DELETE FROM preferences")
+                self._conn.execute("VACUUM")
+            log.info("ConversationDatabase cleared successfully ✅")
+            return True
+        except Exception as e:
+            log.error(f"ConversationDatabase clear error: {e}")
+            return False
+
     def close(self):
         """Close the database connection gracefully."""
         try:

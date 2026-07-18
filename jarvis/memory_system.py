@@ -13,6 +13,7 @@ Storage:
 """
 
 import json
+import random
 import re
 import time
 from collections import deque
@@ -183,6 +184,46 @@ class MemorySystem:
         """
         text_lower = text.lower().strip()
 
+        # Check if this input matches a structured personal fact pattern.
+        # If so, we let it flow through to main._process_command_inner() so that
+        # the structured PersonalMemory and the name-sync pipeline can handle it.
+        pm = self._get_personal_mem()
+        if pm:
+            # Clean trailing phrases similar to how PersonalMemory does it
+            clean_text = re.sub(
+                r"\s+(?:"
+                r"remember (?:it|this|that|please|ok)"
+                r"|save (?:it|this|that)"
+                r"|note (?:it|this|that)"
+                r"|keep (?:it|this|that)"
+                r"|please"
+                r"|ok\??"
+                r"|right\??"
+                r"|got it"
+                r"|okay"
+                r")\s*[.!?]?\s*$",
+                "",
+                text_lower,
+                flags=re.IGNORECASE,
+            ).strip()
+
+            is_personal = False
+            for pattern, key, grp in pm.LEARN_PATTERNS:
+                if re.search(pattern, clean_text):
+                    is_personal = True
+                    break
+
+            if not is_personal:
+                for triggers, key, template in pm.RECALL_PATTERNS:
+                    if any(t in text_lower for t in triggers):
+                        is_personal = True
+                        break
+
+            if is_personal:
+                from utils.logger import log
+                log.info("Personal memory pattern detected in MemorySystem. Let main handler process it.")
+                return None
+
         # ── "Remember that X" explicit saves ──────────────────
         for phrase in _REMEMBER_PHRASES:
             if phrase in text_lower:
@@ -217,43 +258,39 @@ class MemorySystem:
     def get_context_for_llm(self) -> str:
         """
         Build a compact memory context string for LLM prompts.
-        Includes: personal facts + JSON preferences + short-term context.
+        ONLY includes: structured personal facts + last 2 turns of conversation.
+        
+        NOTE: We intentionally do NOT inject raw JSON preferences or topic
+        counts here — those cause the LLM to ramble about old conversations
+        (e.g., "Sarvani", old colour mentions) instead of answering directly.
         """
         parts = []
 
-        # Personal facts from PersonalMemory
+        # 1. Personal facts from PersonalMemory (structured: name, color, etc.)
         pm = self._get_personal_mem()
         if pm:
             summary = pm.get_summary()
             if summary:
-                parts.append(f"Personal facts about {config.USER_NAME}: {summary}")
+                parts.append(f"Known facts about {config.USER_NAME}: {summary}")
 
-        # Also check conv_db for any facts stored there
-        if self.conv_db:
-            db_facts = self.conv_db.get_all_facts()
-            if db_facts:
-                for category, items in db_facts.items():
-                    for key, value in items.items():
-                        # Avoid duplicates with PersonalMemory summary
-                        if (
-                            f"{key}: {value}".lower() not in parts[0].lower()
-                            if parts
-                            else True
-                        ):
-                            pass  # Already covered by pm.get_summary()
-
-        # JSON preferences (last 3)
-        prefs = list(self._data.get("preferences", {}).values())[-3:]
-        if prefs:
-            parts.append("Preferences: " + "; ".join(p["value"] for p in prefs))
-
-        # JSON facts (last 5)
-        json_facts = self._data.get("facts", [])[-5:]
+        # 2. JSON facts — only the LATEST unique facts (max 3, skip duplicates of PM)
+        json_facts = self._data.get("facts", [])
         if json_facts:
-            parts.append("Remembered: " + "; ".join(f["fact"] for f in json_facts))
+            seen = set()
+            unique_facts = []
+            for f in reversed(json_facts):
+                fact_text = f.get("fact", "").strip()
+                fact_key = fact_text.lower()
+                if fact_key not in seen and fact_text:
+                    seen.add(fact_key)
+                    unique_facts.append(fact_text)
+                if len(unique_facts) >= 3:
+                    break
+            if unique_facts:
+                parts.append("Remembered: " + "; ".join(unique_facts))
 
-        # Short-term recent conversation (last 4 turns)
-        ctx = self.get_recent_context(4)
+        # 3. Short-term recent conversation (last 2 turns only — prevents noise)
+        ctx = self.get_recent_context(2)
         if ctx:
             parts.append("Recent conversation:\n" + ctx)
 
@@ -287,64 +324,40 @@ class MemorySystem:
     # ── Recall / Search ──────────────────────────────────────
 
     def recall_all(self) -> str:
-        """Produce a full summary of everything JARVIS remembers."""
-        parts = []
-
-        # Personal facts
+        """Produce a clean, conversational summary of stored personal facts."""
         pm = self._get_personal_mem()
         if pm:
             all_facts = pm.get_all()
             if all_facts:
-                parts.append("Personal info I have on file:")
+                # Build a natural sentence like Gemini/ChatGPT would
                 labels = {
-                    "name": "Name",
-                    "nickname": "Nickname",
-                    "age": "Age",
-                    "city": "City",
-                    "college": "College",
-                    "job": "Workplace",
-                    "birthday": "Birthday",
-                    "hobby": "Hobbies",
-                    "profession": "Profession",
-                    "note": "Note",
+                    "name": "name",
+                    "nickname": "nickname",
+                    "age": "age",
+                    "city": "city",
+                    "college": "college",
+                    "job": "job",
+                    "birthday": "birthday",
+                    "hobby": "hobbies",
+                    "profession": "profession",
+                    "note": "a note",
                 }
-                for key, label in labels.items():
-                    if key in all_facts:
-                        parts.append(f"  • {label}: {all_facts[key]}")
+                fact_lines = [
+                    f"{label}: {all_facts[key]}"
+                    for key, label in labels.items()
+                    if key in all_facts
+                ]
+                if fact_lines:
+                    joined = ". ".join(f.capitalize() for f in fact_lines)
+                    return f"Here's what I know about you, sir. {joined}."
 
-        # JSON-saved facts
+        # JSON-saved facts ("remember that X")
         json_facts = self._data.get("facts", [])
         if json_facts:
-            parts.append("\nThings you asked me to remember:")
-            for f in json_facts[-10:]:
-                parts.append(f"  • {f['fact']}")
+            recent = [f['fact'] for f in json_facts[-5:]]
+            return "You asked me to keep this in mind: " + "; ".join(recent) + "."
 
-        # Preferences
-        prefs = self._data.get("preferences", {})
-        if prefs:
-            parts.append("\nYour preferences I've noted:")
-            for v in list(prefs.values())[-5:]:
-                parts.append(f"  • {v['value']}")
-
-        # Top topics
-        top_topics = sorted(
-            self._data.get("topics", {}).items(),
-            key=lambda x: x[1],
-            reverse=True,
-        )[:5]
-        if top_topics:
-            parts.append("\nTopics you bring up most:")
-            for t, c in top_topics:
-                parts.append(f"  • {t} ({c}×)")
-
-        # Stats
-        stats = self.get_memory_stats()
-        parts.append(
-            f"\nTotal conversations saved: {stats['total']} "
-            f"({stats['today']} today, across {stats['sessions']} sessions)"
-        )
-
-        return "\n".join(parts) if parts else "My memory is blank so far, sir."
+        return "I don't have any personal facts on file yet, sir. Just tell me something like your name or college and I'll remember it."
 
     def search_history(self, query: str) -> str:
         """
@@ -418,6 +431,11 @@ class MemorySystem:
                 "work",
                 "study",
                 "phone",
+                "email",
+                "password",
+                "passcode",
+                "wifi",
+                "wi-fi",
             ]
         ):
             return 1.0
@@ -525,32 +543,33 @@ class MemorySystem:
 
     def _save_fact(self, fact: str, temporary: bool = False) -> str:
         """Save a manually-triggered fact to JSON long-term memory."""
-        # Detect conflict
+        # Detect conflict — if found, REPLACE the old fact
         conflict = self._detect_conflict(fact)
         if conflict:
-            reply = (
-                f"Sir, I have conflicting info: I knew '{conflict['fact']}', "
-                f"but you're telling me '{fact}'. "
-                f"Should I update it? (Say 'yes update' or 'keep old')"
-            )
-            self._data["facts"].append(
-                {
-                    "fact": fact,
-                    "learned_at": datetime.now().isoformat(),
-                    "confidence": 0.6,
-                    "importance": self._score_importance(fact),
-                    "cluster": self._classify_cluster(fact),
-                    "expires_at": None,
-                    "conflict_with": conflict["fact"],
-                }
-            )
+            old_fact_text = conflict["fact"]
+            # Remove the old conflicting fact
+            self._data["facts"] = [
+                f for f in self._data["facts"]
+                if f.get("fact", "").lower() != old_fact_text.lower()
+            ]
+            # Add the updated fact
+            self._data["facts"].append({
+                "fact": fact,
+                "learned_at": datetime.now().isoformat(),
+                "confidence": 1.0,
+                "importance": self._score_importance(fact),
+                "cluster": self._classify_cluster(fact),
+                "expires_at": None,
+            })
             self._save()
-            return reply
+            return f"Got it. I've updated from '{old_fact_text}' to '{fact}'."
 
-        # Avoid exact duplicates
+        # Avoid exact duplicates (ignoring case, whitespace, and basic punctuation)
+        fact_clean = re.sub(r'[^\w\s]', '', fact.lower()).strip()
         for existing in self._data["facts"]:
-            if fact.lower() in existing["fact"].lower():
-                return f'I already have that noted, sir: "{existing["fact"]}"'
+            existing_clean = re.sub(r'[^\w\s]', '', existing["fact"].lower()).strip()
+            if fact_clean == existing_clean:
+                return f'I already remember that: "{existing["fact"]}"'
 
         # TTL for temporary facts
         expires_at = None
@@ -574,7 +593,14 @@ class MemorySystem:
         if self.conv_db:
             self.conv_db.save_fact("manual", fact[:50], fact)
 
-        return f"Noted and saved, sir. I'll remember that {fact}."
+        # Casual, smart-friend confirmations
+        confirmations = [
+            f"Got it. I'll remember that {fact}.",
+            f"Noted. I've saved that: {fact}.",
+            f"Alright, I'll keep that in mind: {fact}.",
+            f"Saved. I'll remember that {fact}."
+        ]
+        return random.choice(confirmations)
 
     def _save_preference(self, preference: str):
         """Track a user preference quietly."""
@@ -728,3 +754,34 @@ class MemorySystem:
             )
         except Exception as _e:
             return f"Timeline error: {_e}"
+
+    def clear_all(self):
+        """Clear all long-term memory: JSON facts, preferences, SQLite database, and PersonalMemory."""
+        from utils.logger import log
+
+        # 1. Clear JSON-backed preferences/facts/topics
+        self._data = {
+            "facts": [],
+            "preferences": {},
+            "topics": {},
+            "corrections": [],
+            "session_count": 0,
+            "total_exchanges": 0,
+        }
+        self._save()
+
+        # 2. Clear PersonalMemory
+        pm = self._get_personal_mem()
+        if pm:
+            pm.clear()
+
+        # 3. Clear ConversationDatabase
+        if self.conv_db:
+            self.conv_db.clear_all()
+
+        # 4. Clear In-RAM short-term context
+        self._short_term.clear()
+
+        # 5. Clear config USER_NAME back to Sir
+        config.USER_NAME = "Sir"
+        log.info("MemorySystem cleared successfully ✅")

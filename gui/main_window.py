@@ -243,6 +243,7 @@ class VoiceWorker(QThread):
         self.listener = listener
         self._running = True
         self._active_until = 0
+        self._mic_muted = False
         import speech_recognition as sr
 
         self._rec = sr.Recognizer()
@@ -310,10 +311,21 @@ class VoiceWorker(QThread):
         except Exception as e:
             print(f"  ⚠️  Clap monitor unavailable: {e}")
 
+    def toggle_mute(self):
+        self._mic_muted = not self._mic_muted
+        if self._mic_muted:
+            self.state_changed.emit("muted")
+        else:
+            self.state_changed.emit("sleeping")
+
     def run(self):
         import speech_recognition as sr
 
         while self._running:
+            if getattr(self, "_mic_muted", False):
+                time.sleep(0.5)
+                continue
+
             if time.time() < self._active_until:
                 self.state_changed.emit("listening")
                 try:
@@ -675,6 +687,8 @@ class JARVISWindow(QMainWindow):
         cmds = [
             ("⚡  ACTIVATE", self._wake),
             ("⏹  STOP AUDIO", self._stop_speak),
+            ("🎙  MUTE MIC", self._toggle_mute),
+            ("🔊  MUTE SPEAKER", self._toggle_speaker_mute),
             ("🌤  WEATHER", lambda: self._quick("weather")),
             ("🕐  TIME", lambda: self._quick("time")),
             ("📰  NEWS", lambda: self._quick("news")),
@@ -682,8 +696,14 @@ class JARVISWindow(QMainWindow):
             ("👁  VISION", lambda: self._quick("what is this")),
             ("📁  FILES", lambda: self._quick("open desktop")),
         ]
+        self._mute_btn = None
+        self._mute_speaker_btn = None
         for label, fn in cmds:
             b = QPushButton(label)
+            if "MUTE MIC" in label:
+                self._mute_btn = b
+            elif "MUTE SPEAKER" in label:
+                self._mute_speaker_btn = b
             b.setStyleSheet(btn_style)
             b.clicked.connect(fn)
             rlay.addWidget(b)
@@ -963,11 +983,12 @@ class JARVISWindow(QMainWindow):
                 response = self.jarvis.process_command(text)
                 if response:
                     self.add_jarvis_msg.emit(response)
-                    self.update_status.emit("🔊  SPEAKING...")
-                    try:
-                        self.jarvis._speak(response)
-                    except Exception as e:
-                        print(f"[SPEAK ERR] {e}")
+                    if not getattr(self.jarvis, "_last_response_spoken", False):
+                        self.update_status.emit("🔊  SPEAKING...")
+                        try:
+                            self.jarvis._speak(response)
+                        except Exception as e:
+                            print(f"[SPEAK ERR] {e}")
             except Exception as e:
                 import traceback
 
@@ -987,6 +1008,7 @@ class JARVISWindow(QMainWindow):
             "wake": "⚡  JARVIS ACTIVATED — LISTENING (60s)",
             "listening": "🎤  LISTENING...",
             "processing": "🧠  PROCESSING...",
+            "muted": "🔇  MICROPHONE MUTED",
         }
         self.update_status.emit(msgs.get(state, state))
 
@@ -1001,6 +1023,35 @@ class JARVISWindow(QMainWindow):
             self.update_status.emit("⚡  JARVIS ACTIVATED — LISTENING (60s)")
             self._orb.set_wake()
             self.add_system_msg.emit("JARVIS activated manually.")
+
+    def _toggle_mute(self):
+        if self._voice_thread:
+            self._voice_thread.toggle_mute()
+            if self._voice_thread._mic_muted:
+                if self._mute_btn:
+                    self._mute_btn.setText("🎙  UNMUTE MIC")
+                self.update_status.emit("🔇  MICROPHONE MUTED")
+                self.add_system_msg.emit("Microphone completely disabled. JARVIS will not listen.")
+                self._orb.set_idle()
+            else:
+                if self._mute_btn:
+                    self._mute_btn.setText("🎙  MUTE MIC")
+                self.update_status.emit("💤  SAY 'HEY JARVIS' TO ACTIVATE")
+                self.add_system_msg.emit("Microphone enabled.")
+
+    def _toggle_speaker_mute(self):
+        if self.jarvis and hasattr(self.jarvis, "speaker"):
+            is_muted = self.jarvis.speaker.toggle_mute()
+            if is_muted:
+                if self._mute_speaker_btn:
+                    self._mute_speaker_btn.setText("🔊  UNMUTE SPEAKER")
+                self.update_status.emit("🔇  SPEAKER MUTED")
+                self.add_system_msg.emit("Speaker muted. Text output only.")
+            else:
+                if self._mute_speaker_btn:
+                    self._mute_speaker_btn.setText("🔊  MUTE SPEAKER")
+                self.update_status.emit("🔊  SPEAKER ENABLED")
+                self.add_system_msg.emit("Speaker enabled.")
 
     def _stop_speak(self):
         if self.jarvis and hasattr(self.jarvis, "speaker"):

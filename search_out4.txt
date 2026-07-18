@@ -1,0 +1,1 @@
+1547:     def parse_whatsapp_command(self, text: str) -> tuple:

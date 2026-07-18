@@ -1,0 +1,4 @@
+1672:                 r"(?:chat\s+with\s+|whatsapp\s+(?:chat\s+)?(?:of\s+|with\s+)?)?([a-zA-Z ]+?)"
+1679:                     r"([a-zA-Z ]+?)'?s?\s+(?:chat|whatsapp)\s*(?:open|show|go)?\s*(?:on whatsapp|in whatsapp|on wa|in wa)?$",
+2523:                 r"(?:in|for|at)\s+([a-zA-Z ]+?)(?:\s*$|\s*\?)", text_lower
+2543:                 r"(?:in|for|at)\s+([a-zA-Z ]+?)(?:\s*$|\s*\?)", text_lower

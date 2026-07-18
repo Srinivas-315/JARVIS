@@ -40,11 +40,58 @@ class JarvisFormatter(logging.Formatter):
         prefix = self.PREFIXES.get(record.levelno, "📢")
         time   = datetime.now().strftime("%H:%M:%S")
 
-        return (
+        # Detect console encoding
+        encoding = getattr(sys.stdout, 'encoding', 'utf-8') or 'utf-8'
+        is_utf8 = encoding.lower() in ('utf-8', 'utf_8', 'utf8')
+
+        # Fallback to plain text prefixes if console doesn't support unicode/emojis
+        if not is_utf8:
+            plain_prefixes = {
+                logging.DEBUG:    "[DEBUG]",
+                logging.INFO:     "[JARVIS]",
+                logging.WARNING:  "[WARN]",
+                logging.ERROR:    "[ERROR]",
+                logging.CRITICAL: "[FATAL]",
+            }
+            prefix = plain_prefixes.get(record.levelno, "[INFO]")
+
+        msg = record.getMessage()
+
+        # Build full message
+        full_msg = (
             f"{Style.DIM}[{time}]{Style.RESET_ALL} "
             f"{color}{prefix}{Style.RESET_ALL} "
-            f"{record.getMessage()}"
+            f"{msg}"
         )
+
+        # Test encode and handle failures gracefully
+        try:
+            full_msg.encode(encoding)
+        except UnicodeEncodeError:
+            # If standard message fails to encode, sanitize the message content
+            safe_msg = msg.encode(encoding, errors='replace').decode(encoding)
+            try:
+                # Re-verify and fallback if prefix itself is also problematic
+                full_msg = (
+                    f"{Style.DIM}[{time}]{Style.RESET_ALL} "
+                    f"{color}{prefix}{Style.RESET_ALL} "
+                    f"{safe_msg}"
+                )
+                full_msg.encode(encoding)
+            except UnicodeEncodeError:
+                # If still failing, fallback completely to ASCII format
+                ascii_prefix = {
+                    logging.DEBUG:    "DEBUG",
+                    logging.INFO:     "JARVIS",
+                    logging.WARNING:  "WARN",
+                    logging.ERROR:    "ERROR",
+                    logging.CRITICAL: "FATAL",
+                }.get(record.levelno, "INFO")
+                full_msg = (
+                    f"[{time}] {ascii_prefix}: {safe_msg}"
+                )
+
+        return full_msg
 
 
 def get_logger(name: str = "JARVIS") -> logging.Logger:

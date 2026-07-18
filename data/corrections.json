@@ -5,7 +5,7 @@
     "corrected_command": "chrome",
     "correct_intent": "chat",
     "timestamp": "2026-04-17T12:31:57.244932",
-    "count": 2
+    "count": 5
   },
   {
     "original_heard": "college black",
@@ -21,6 +21,14 @@
     "corrected_command": "you are wrong my favourite colour is black why are you telling blue",
     "correct_intent": "chat",
     "timestamp": "2026-04-17T15:52:51.224737",
+    "count": 1
+  },
+  {
+    "original_heard": "it's not stream it is srinivas",
+    "original_intent": "chat",
+    "corrected_command": "jarvis my name is srinivas",
+    "correct_intent": "chat",
+    "timestamp": "2026-05-27T16:27:02.681135",
     "count": 1
   }
 ]

@@ -23,6 +23,8 @@ import threading
 import numpy as np
 from pathlib import Path
 
+from brain.vision_handler import VisionHandler
+
 _ROOT       = Path(__file__).parent.parent
 _FACE_DIR   = _ROOT / "data" / "faces"
 _MODEL_PATH = _ROOT / "data" / "faces" / "face_model.yml"
@@ -82,8 +84,12 @@ class FaceLogin:
         print("  Press Q to cancel.")
         print()
 
-        cap = cv2.VideoCapture(0)
-        if not cap.isOpened():
+        vh = VisionHandler()
+        from brain.vision_handler import _CAMERA_LOCK
+        _CAMERA_LOCK.acquire(timeout=5)
+        cap = vh._open_real_webcam(cv2)
+        if not cap:
+            _CAMERA_LOCK.release()
             print("❌ Could not open webcam!")
             return False
 
@@ -145,14 +151,19 @@ class FaceLogin:
             key = cv2.waitKey(1) & 0xFF
             if key == ord('q'):
                 print("\n  Cancelled.")
-                cap.release()
                 cv2.destroyAllWindows()
                 return False
 
             time.sleep(0.05)  # Small delay for variety
 
-        cap.release()
         cv2.destroyAllWindows()
+        if cap:
+            cap.release()
+        try:
+            from brain.vision_handler import _CAMERA_LOCK
+            _CAMERA_LOCK.release()
+        except RuntimeError:
+            pass
 
         if captured < 20:
             print(f"\n❌ Not enough frames ({captured}). Need at least 20.")
@@ -206,8 +217,12 @@ class FaceLogin:
         print(f"  ⏱️  Timeout: {timeout} seconds | Press Q to enter password")
         print()
 
-        cap = cv2.VideoCapture(0)
-        if not cap.isOpened():
+        vh = VisionHandler()
+        from brain.vision_handler import _CAMERA_LOCK
+        _CAMERA_LOCK.acquire(timeout=5)
+        cap = vh._open_real_webcam(cv2)
+        if not cap:
+            _CAMERA_LOCK.release()
             print("  ⚠️  Webcam unavailable — using password fallback")
             return self._password_fallback()
 
@@ -293,12 +308,17 @@ class FaceLogin:
 
             key = cv2.waitKey(1) & 0xFF
             if key == ord('q'):
-                cap.release()
                 cv2.destroyAllWindows()
                 return self._password_fallback()
 
-        cap.release()
         cv2.destroyAllWindows()
+        if cap:
+            cap.release()
+        try:
+            from brain.vision_handler import _CAMERA_LOCK
+            _CAMERA_LOCK.release()
+        except RuntimeError:
+            pass
 
         if verified:
             avg_conf = np.mean([c for c in confidence_scores
@@ -351,9 +371,11 @@ class FaceLogin:
                 time.sleep(check_interval)
 
                 try:
-                    cap = cv2.VideoCapture(0)
-                    ret, frame = cap.read()
-                    cap.release()
+                    vh = VisionHandler()
+                    with vh.acquire_camera() as cap:
+                        if not cap:
+                            continue
+                        ret, frame = cap.read()
 
                     if not ret:
                         continue
